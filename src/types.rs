@@ -4,7 +4,9 @@ use chrono::{DateTime, FixedOffset};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
 pub struct ServiceKey {
     pub onid: u16,
     pub tsid: u16,
@@ -109,6 +111,7 @@ pub struct ChSet5Item {
     pub partial_flag: bool,
     pub epg_cap_flag: bool,
     pub search_flag: bool,
+    pub remocon_id: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -273,6 +276,47 @@ impl RecordSettingsPatch {
     pub fn is_empty(&self) -> bool {
         self == &Self::default()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct RecordSettings {
+    pub is_enabled: bool,
+    pub priority: u8,
+    pub recording_folders: Vec<RecordingFolder>,
+    pub recording_start_margin: Option<i32>,
+    pub recording_end_margin: Option<i32>,
+    pub recording_mode: RecordingMode,
+    pub caption_recording_mode: ServiceRecordingMode,
+    pub data_broadcasting_recording_mode: ServiceRecordingMode,
+    pub post_recording_mode: PostRecordingMode,
+    pub post_recording_bat_file_path: Option<String>,
+    pub is_event_relay_follow_enabled: bool,
+    pub is_exact_recording_enabled: bool,
+    pub is_oneseg_separate_output_enabled: bool,
+    pub is_sequential_recording_in_single_file_enabled: bool,
+    pub forced_tuner_id: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct RecordSettingsGlobalDefaults {
+    pub recording_start_margin: i32,
+    pub recording_end_margin: i32,
+    pub caption_recording_mode: ServiceRecordingMode,
+    pub data_broadcasting_recording_mode: ServiceRecordingMode,
+    pub post_recording_mode: PostRecordingMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct RecordSettingsPreset {
+    pub id: i32,
+    pub name: String,
+    pub record_settings: RecordSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct RecordSettingsPresets {
+    pub global_defaults: RecordSettingsGlobalDefaults,
+    pub presets: Vec<RecordSettingsPreset>,
 }
 
 fn normalize_option(value: &str) -> String {
@@ -483,6 +527,23 @@ pub struct TimeTableChannel {
 pub struct TimeTableSubchannel {
     pub service: ServiceInfo,
     pub programs: Vec<TimeTableProgram>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct Channel {
+    pub id: String,
+    pub display_channel_id: String,
+    pub service_key: ServiceKey,
+    pub network_id: u16,
+    pub transport_stream_id: u16,
+    pub service_id: u16,
+    pub remocon_id: u16,
+    pub channel_number: String,
+    pub channel_type: ChannelType,
+    pub name: String,
+    pub is_subchannel: bool,
+    pub is_radiochannel: bool,
+    pub is_watchable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

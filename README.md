@@ -146,6 +146,9 @@ Available commands:
 - `recorded get <info-id>`
 - `programs search [search options]`
 - `programs timetable [timetable options]`
+- `channels`
+- `recording defaults`
+- `recording presets`
 - `reservation-conditions`
 - `reservation-conditions get <condition-id>`
 - `reservation-conditions create [search options] [recording options] --yes`
@@ -232,6 +235,26 @@ edcb programs timetable --channel-type gr
 edcb programs timetable --service 32736:32736:1024 --start-time 2026-06-29T19:00:00+09:00 --end-time 2026-06-29T23:00:00+09:00
 ```
 
+`channels` returns a DB-free KonomiTV-style channel snapshot built from
+`ChSet5.txt` and `EnumService`. It includes `display_channel_id`, channel type,
+service key, remocon ID, subchannel/radio flags, and watchability flags. Because
+it is stateless, it does not preserve recorded-only historical channels, pinned
+channels, jikkyo state, or viewer counts.
+
+```sh
+edcb channels
+edcb --json channels
+```
+
+`recording defaults` decodes the EDCB default reservation settings returned by
+`GetReserve2(0x7fffffff)`. `recording presets` reads `EpgTimerSrv.ini` through
+`FileCopy2` and returns global defaults plus recording presets, including ID 0.
+
+```sh
+edcb recording defaults
+edcb --json recording presets
+```
+
 Common recording options:
 
 - `--priority <1-5>`
@@ -273,6 +296,9 @@ Exposed MCP tools:
 - `get_reservation`
 - `list_recorded`
 - `get_recorded_info`
+- `list_channels`
+- `get_recording_defaults`
+- `get_recording_presets`
 - `search_programs`
 - `get_timetable`
 - `list_reservation_conditions`

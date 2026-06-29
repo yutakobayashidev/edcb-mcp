@@ -386,6 +386,46 @@ fn parses_program_timetable_command() {
 }
 
 #[test]
+fn parses_recording_defaults_and_presets_commands() {
+    let defaults = CliAction::from_args_and_env(["edcb", "recording", "defaults"], empty_env())
+        .expect("recording defaults command should parse");
+    let presets =
+        CliAction::from_args_and_env(["edcb", "--json", "recording", "presets"], empty_env())
+            .expect("recording presets command should parse");
+
+    assert!(matches!(
+        defaults,
+        CliAction::Run(CliInvocation {
+            command: CliCommand::RecordingDefaults,
+            ..
+        })
+    ));
+    assert!(matches!(
+        presets,
+        CliAction::Run(CliInvocation {
+            output: OutputMode::Json,
+            command: CliCommand::RecordingPresets,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn parses_channels_command() {
+    let action = CliAction::from_args_and_env(["edcb", "--plain", "channels"], empty_env())
+        .expect("channels command should parse");
+
+    assert_eq!(
+        action,
+        CliAction::Run(CliInvocation {
+            connection: connection("127.0.0.1", 4510, 15),
+            output: OutputMode::Plain,
+            command: CliCommand::Channels,
+        })
+    );
+}
+
+#[test]
 fn rejects_invalid_program_search_date_range() {
     let error = CliAction::from_args_and_env(
         ["edcb", "programs", "search", "--date-range", "1:19-1:23"],

@@ -433,6 +433,33 @@ impl EdcbMcpServer {
         to_call_tool_result(self.client().enum_service().await)
     }
 
+    #[tool(
+        name = "list_channels",
+        description = "List KonomiTV-style EDCB channels without a persistent database"
+    )]
+    pub async fn list_channels(&self) -> Result<CallToolResult, String> {
+        let client = self.client();
+        to_call_tool_result(flows::list_channels(&client).await)
+    }
+
+    #[tool(
+        name = "get_recording_defaults",
+        description = "Get EDCB default reservation recording settings"
+    )]
+    pub async fn get_recording_defaults(&self) -> Result<CallToolResult, String> {
+        let client = self.client();
+        to_call_tool_result(flows::get_recording_defaults(&client).await)
+    }
+
+    #[tool(
+        name = "get_recording_presets",
+        description = "Get EDCB recording global defaults and presets from EpgTimerSrv.ini"
+    )]
+    pub async fn get_recording_presets(&self) -> Result<CallToolResult, String> {
+        let client = self.client();
+        to_call_tool_result(flows::get_recording_presets(&client).await)
+    }
+
     #[tool(name = "list_reserves", description = "List EDCB reserves")]
     pub async fn list_reserves(&self) -> Result<CallToolResult, String> {
         to_call_tool_result(self.client().enum_reserve().await)

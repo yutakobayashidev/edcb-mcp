@@ -57,6 +57,10 @@ impl Writer {
         self.buf[pos..pos + 4].copy_from_slice(&value.to_le_bytes());
     }
 
+    pub(crate) fn write_bytes(&mut self, value: &[u8]) {
+        self.buf.extend(value);
+    }
+
     pub(crate) fn write_string(&mut self, value: &str) {
         let encoded: Vec<u8> = value
             .encode_utf16()

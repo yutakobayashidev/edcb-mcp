@@ -4,15 +4,19 @@ use chrono::{DateTime, Datelike, Duration as ChronoDuration, FixedOffset, Utc};
 
 use crate::client::EdcbClient;
 use crate::error::{EdcbError, Result};
-use crate::types::{
-    AutoAddData, BroadcastType, ChannelType, ContentData, DuplicateTitleCheckScope, EventInfo,
-    EventKey, PostRecordingMode, ProgramGenreRange, ProgramSearchQuery, RecFileSetInfo,
-    RecSettingData, RecordSettingsPatch, RecordingAvailability, RecordingFolder, RecordingMode,
-    ReservationCondition, ReservationStatus, ReserveData, SearchDateInfo, SearchKeyInfo,
-    ServiceInfo, ServiceKey, ServiceRecordingMode, TimeTable, TimeTableChannel, TimeTableDateRange,
-    TimeTableProgram, TimeTableProgramReservation, TimeTableQuery, TimeTableSubchannel,
+use crate::recording::{
+    rec_file_set_lists, rec_mode_value, record_settings_from_rec_setting as decode_record_settings,
+    recording_mode_from_rec_mode, service_mode_value, service_recording_modes, suspend_mode_value,
 };
-use crate::util::datetime_to_file_time;
+use crate::types::{
+    AutoAddData, BroadcastType, Channel, ChannelType, ContentData, DuplicateTitleCheckScope,
+    EventInfo, EventKey, ProgramGenreRange, ProgramSearchQuery, RecSettingData, RecordSettings,
+    RecordSettingsPatch, RecordSettingsPresets, RecordingAvailability, ReservationCondition,
+    ReservationStatus, ReserveData, SearchDateInfo, SearchKeyInfo, ServiceInfo, ServiceKey,
+    TimeTable, TimeTableChannel, TimeTableDateRange, TimeTableProgram, TimeTableProgramReservation,
+    TimeTableQuery, TimeTableSubchannel,
+};
+use crate::util::{convert_bytes_to_string, datetime_to_file_time, parse_ch_set5};
 
 const EPG_SERVICE_ALL_MASK: i64 = 0x0000_ffff_ffff_ffff;
 const EPG_LOOKUP_TIME_BEGIN: i64 = 1;
@@ -610,6 +614,39 @@ pub async fn delete_reservation(client: &EdcbClient, reserve_id: i32) -> Result<
     Ok(reserve)
 }
 
+pub fn record_settings_from_rec_setting(rec_setting: &RecSettingData) -> Result<RecordSettings> {
+    decode_record_settings(rec_setting)
+}
+
+pub async fn get_recording_defaults(client: &EdcbClient) -> Result<RecordSettings> {
+    let reserve = client.get_default_reserve().await?;
+    record_settings_from_rec_setting(&reserve.rec_setting)
+}
+
+pub async fn get_recording_presets(client: &EdcbClient) -> Result<RecordSettingsPresets> {
+    let files = client.file_copy2(&["EpgTimerSrv.ini".to_string()]).await?;
+    let file = files
+        .into_iter()
+        .find(|file| file.name.eq_ignore_ascii_case("EpgTimerSrv.ini"))
+        .ok_or_else(|| EdcbError::InvalidInput("EpgTimerSrv.ini was not returned".to_string()))?;
+    if file.data.is_empty() {
+        return Err(EdcbError::InvalidInput(
+            "EpgTimerSrv.ini is empty".to_string(),
+        ));
+    }
+    let ini = convert_bytes_to_string(&file.data, "cp932");
+    crate::recording::parse_recording_presets_ini(&ini)
+}
+
+pub async fn list_channels(client: &EdcbClient) -> Result<Vec<Channel>> {
+    let chset = match client.file_copy("ChSet5.txt").await {
+        Ok(data) if !data.is_empty() => parse_ch_set5(&convert_bytes_to_string(&data, "cp932")),
+        _ => crate::channels::chset_from_services(client.enum_service().await?),
+    };
+    let epg_services = client.enum_service().await.unwrap_or_default();
+    Ok(crate::channels::channels_from_sources(chset, &epg_services))
+}
+
 pub async fn list_reservation_conditions(client: &EdcbClient) -> Result<Vec<ReservationCondition>> {
     client
         .enum_auto_add()
@@ -890,107 +927,6 @@ async fn find_event(client: &EdcbClient, event_key: EventKey) -> Result<(Service
         "event not found: {}:{}:{}:{}",
         event_key.service.onid, event_key.service.tsid, event_key.service.sid, event_key.eid
     )))
-}
-
-fn recording_mode_from_rec_mode(rec_mode: u8) -> Result<RecordingMode> {
-    match rec_mode {
-        0 | 9 => Ok(RecordingMode::AllServices),
-        1 | 5 => Ok(RecordingMode::SpecifiedService),
-        2 | 6 => Ok(RecordingMode::AllServicesWithoutDecoding),
-        3 | 7 => Ok(RecordingMode::SpecifiedServiceWithoutDecoding),
-        4 | 8 => Ok(RecordingMode::View),
-        _ => Err(EdcbError::InvalidInput(format!(
-            "unsupported EDCB rec_mode: {rec_mode}"
-        ))),
-    }
-}
-
-fn rec_mode_value(enabled: bool, mode: RecordingMode) -> u8 {
-    match (enabled, mode) {
-        (true, RecordingMode::AllServices) => 0,
-        (true, RecordingMode::SpecifiedService) => 1,
-        (true, RecordingMode::AllServicesWithoutDecoding) => 2,
-        (true, RecordingMode::SpecifiedServiceWithoutDecoding) => 3,
-        (true, RecordingMode::View) => 4,
-        (false, RecordingMode::AllServices) => 9,
-        (false, RecordingMode::SpecifiedService) => 5,
-        (false, RecordingMode::AllServicesWithoutDecoding) => 6,
-        (false, RecordingMode::SpecifiedServiceWithoutDecoding) => 7,
-        (false, RecordingMode::View) => 8,
-    }
-}
-
-fn service_recording_modes(service_mode: u32) -> (ServiceRecordingMode, ServiceRecordingMode) {
-    if service_mode & 0x0000_0001 == 0 {
-        return (ServiceRecordingMode::Default, ServiceRecordingMode::Default);
-    }
-    let caption = if service_mode & 0x0000_0010 != 0 {
-        ServiceRecordingMode::Enable
-    } else {
-        ServiceRecordingMode::Disable
-    };
-    let data = if service_mode & 0x0000_0020 != 0 {
-        ServiceRecordingMode::Enable
-    } else {
-        ServiceRecordingMode::Disable
-    };
-    (caption, data)
-}
-
-fn service_mode_value(caption: ServiceRecordingMode, data: ServiceRecordingMode) -> Result<u32> {
-    let caption_default = caption == ServiceRecordingMode::Default;
-    let data_default = data == ServiceRecordingMode::Default;
-    if caption_default != data_default {
-        return Err(EdcbError::InvalidInput(
-            "caption and data recording modes must both be Default or both be explicit".to_string(),
-        ));
-    }
-    if caption_default {
-        return Ok(0);
-    }
-    let mut service_mode = 0x0000_0001;
-    if caption == ServiceRecordingMode::Enable {
-        service_mode |= 0x0000_0010;
-    }
-    if data == ServiceRecordingMode::Enable {
-        service_mode |= 0x0000_0020;
-    }
-    Ok(service_mode)
-}
-
-fn suspend_mode_value(mode: PostRecordingMode) -> (u8, bool) {
-    match mode {
-        PostRecordingMode::Default => (0, false),
-        PostRecordingMode::Standby => (1, false),
-        PostRecordingMode::StandbyAndReboot => (1, true),
-        PostRecordingMode::Suspend => (2, false),
-        PostRecordingMode::SuspendAndReboot => (2, true),
-        PostRecordingMode::Shutdown => (3, false),
-        PostRecordingMode::Nothing => (4, false),
-    }
-}
-
-fn rec_file_set_lists(folders: &[RecordingFolder]) -> (Vec<RecFileSetInfo>, Vec<RecFileSetInfo>) {
-    let mut normal = Vec::new();
-    let mut partial = Vec::new();
-    for folder in folders {
-        let info = RecFileSetInfo {
-            rec_folder: folder.recording_folder_path.clone(),
-            write_plug_in: "Write_Default.dll".to_string(),
-            rec_name_plug_in: folder
-                .recording_file_name_template
-                .as_ref()
-                .filter(|template| !template.is_empty())
-                .map(|template| format!("RecName_Macro.dll?{template}"))
-                .unwrap_or_else(|| "RecName_Macro.dll".to_string()),
-        };
-        if folder.is_oneseg_separate_recording_folder {
-            partial.push(info);
-        } else {
-            normal.push(info);
-        }
-    }
-    (normal, partial)
 }
 
 fn event_lookup_filter(service: Option<ServiceKey>) -> [i64; 4] {

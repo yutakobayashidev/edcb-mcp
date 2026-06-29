@@ -16,13 +16,13 @@ use edcb_tools::{
         update_reservation_condition,
     },
     test_support::{
-        encode_auto_add_list_for_test, encode_event_list_for_test, encode_reserve_for_test,
-        encode_reserve_list_for_test, encode_search_keys_for_test,
+        encode_auto_add_list_for_test, encode_event_list_for_test, encode_file_list_for_test,
+        encode_reserve_for_test, encode_reserve_list_for_test, encode_search_keys_for_test,
         encode_service_event_list_for_test, encode_service_event_lists_for_test,
         encode_services_for_test, read_request_frame_for_test, reserve_fixture_for_test,
         service_event_fixture_for_test,
     },
-    types::AutoAddData,
+    types::{AutoAddData, FileData, RecFileSetInfo, RecSettingData, ServiceInfo},
 };
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -231,6 +231,80 @@ fn applies_record_settings_patch_to_edcb_rec_setting() {
     assert!(rec_setting.continue_rec_flag);
     assert_eq!(rec_setting.partial_rec_flag, 1);
     assert_eq!(rec_setting.tuner_id, 7);
+}
+
+#[test]
+fn record_settings_from_rec_setting_decodes_full_settings() {
+    let rec_setting = RecSettingData {
+        rec_mode: 6,
+        priority: 4,
+        tuijyuu_flag: false,
+        service_mode: 0x0000_0001 | 0x0000_0010 | 0x0000_0020,
+        pittari_flag: true,
+        bat_file_path: "after.bat".to_string(),
+        rec_folder_list: vec![RecFileSetInfo {
+            rec_folder: "/recorded".to_string(),
+            write_plug_in: "Write_Default.dll".to_string(),
+            rec_name_plug_in: "RecName_Macro.dll?$title$.ts".to_string(),
+        }],
+        suspend_mode: 2,
+        reboot_flag: true,
+        start_margin: Some(15),
+        end_margin: Some(25),
+        continue_rec_flag: true,
+        partial_rec_flag: 1,
+        tuner_id: 9,
+        partial_rec_folder: vec![RecFileSetInfo {
+            rec_folder: "/oneseg".to_string(),
+            write_plug_in: "Write_Default.dll".to_string(),
+            rec_name_plug_in: "RecName_Macro.dll".to_string(),
+        }],
+    };
+
+    let settings = edcb_tools::flows::record_settings_from_rec_setting(&rec_setting)
+        .expect("valid EDCB recording settings should decode");
+
+    assert!(!settings.is_enabled);
+    assert_eq!(settings.priority, 4);
+    assert_eq!(
+        settings.recording_mode,
+        RecordingMode::AllServicesWithoutDecoding
+    );
+    assert_eq!(settings.recording_start_margin, Some(15));
+    assert_eq!(settings.recording_end_margin, Some(25));
+    assert_eq!(
+        settings.caption_recording_mode,
+        ServiceRecordingMode::Enable
+    );
+    assert_eq!(
+        settings.data_broadcasting_recording_mode,
+        ServiceRecordingMode::Enable
+    );
+    assert_eq!(
+        settings.post_recording_mode,
+        PostRecordingMode::SuspendAndReboot
+    );
+    assert_eq!(
+        settings.post_recording_bat_file_path.as_deref(),
+        Some("after.bat")
+    );
+    assert!(!settings.is_event_relay_follow_enabled);
+    assert!(settings.is_exact_recording_enabled);
+    assert!(settings.is_oneseg_separate_output_enabled);
+    assert!(settings.is_sequential_recording_in_single_file_enabled);
+    assert_eq!(settings.forced_tuner_id, Some(9));
+    assert_eq!(settings.recording_folders.len(), 2);
+    assert_eq!(
+        settings.recording_folders[0]
+            .recording_file_name_template
+            .as_deref(),
+        Some("$title$.ts")
+    );
+    assert!(settings.recording_folders[1].is_oneseg_separate_recording_folder);
+    assert_eq!(
+        settings.recording_folders[1].recording_file_name_template,
+        None
+    );
 }
 
 #[test]
@@ -1009,6 +1083,196 @@ async fn get_default_reserve_sends_get_reserve2_sentinel_id() {
     assert_eq!(&payload[0..2], &5_u16.to_le_bytes());
     assert_eq!(&payload[2..6], &0x7fff_ffff_i32.to_le_bytes());
     assert_eq!(reserve.title, "Default Reserve");
+}
+
+#[tokio::test]
+async fn get_recording_defaults_fetches_default_reserve_settings() {
+    let mut reserve = reserve_fixture_for_test();
+    reserve.rec_setting.priority = 5;
+    reserve.rec_setting.start_margin = Some(10);
+    reserve.rec_setting.end_margin = Some(20);
+    let (addr, server) = spawn_single_command_server(2012, encode_reserve_for_test(&reserve)).await;
+    let client = test_client(addr);
+
+    let settings = edcb_tools::flows::get_recording_defaults(&client)
+        .await
+        .expect("recording defaults should decode from EDCB default reserve");
+    let payload = server
+        .await
+        .expect("mock EDCB server task should complete without panicking");
+
+    assert_eq!(&payload[0..2], &5_u16.to_le_bytes());
+    assert_eq!(&payload[2..6], &0x7fff_ffff_i32.to_le_bytes());
+    assert_eq!(settings.priority, 5);
+    assert_eq!(settings.recording_start_margin, Some(10));
+    assert_eq!(settings.recording_end_margin, Some(20));
+}
+
+#[tokio::test]
+async fn get_recording_presets_reads_epg_timer_srv_ini() {
+    let ini = r#"
+[SET]
+StartMargin=10
+EndMargin=20
+Caption=0
+Data=1
+RecEndMode=1
+Reboot=1
+PresetID=1,bad,
+
+[REC_DEF]
+SetName=Default
+RecMode=5
+NoRecMode=1
+Priority=3
+TuijyuuFlag=0
+ServiceMode=49
+PittariFlag=1
+BatFilePath=after.bat
+SuspendMode=4
+RebootFlag=0
+UseMargineFlag=1
+StartMargine=15
+EndMargine=25
+ContinueRec=1
+PartialRec=1
+TunerID=7
+
+[REC_DEF_FOLDER]
+Count=1
+0=/recorded
+RecNamePlugIn0=RecName_Macro.dll?$title$.ts
+
+[REC_DEF_FOLDER_1SEG]
+Count=1
+0=/oneseg
+RecNamePlugIn0=RecName_Macro.dll?$title$_1seg.ts
+
+[REC_DEF1]
+SetName=Custom
+RecMode=2
+Priority=5
+"#;
+    let files = [FileData {
+        name: "EpgTimerSrv.ini".to_string(),
+        data: ini.as_bytes().to_vec(),
+    }];
+    let (addr, server) = spawn_single_command_server(2060, encode_file_list_for_test(&files)).await;
+    let client = test_client(addr);
+
+    let presets = edcb_tools::flows::get_recording_presets(&client)
+        .await
+        .expect("recording presets should parse from EpgTimerSrv.ini");
+    let payload = server
+        .await
+        .expect("mock EDCB server task should complete without panicking");
+
+    assert_eq!(&payload[0..2], &5_u16.to_le_bytes());
+    assert_eq!(presets.global_defaults.recording_start_margin, 10);
+    assert_eq!(presets.global_defaults.recording_end_margin, 20);
+    assert_eq!(
+        presets.global_defaults.caption_recording_mode,
+        ServiceRecordingMode::Disable
+    );
+    assert_eq!(
+        presets.global_defaults.data_broadcasting_recording_mode,
+        ServiceRecordingMode::Enable
+    );
+    assert_eq!(
+        presets.global_defaults.post_recording_mode,
+        PostRecordingMode::StandbyAndReboot
+    );
+    assert_eq!(presets.presets.len(), 2);
+    assert_eq!(presets.presets[0].id, 0);
+    assert_eq!(presets.presets[0].name, "Default");
+    assert!(!presets.presets[0].record_settings.is_enabled);
+    assert_eq!(presets.presets[0].record_settings.priority, 3);
+    assert_eq!(
+        presets.presets[0].record_settings.recording_mode,
+        RecordingMode::SpecifiedService
+    );
+    assert_eq!(
+        presets.presets[0]
+            .record_settings
+            .recording_folders
+            .iter()
+            .filter(|folder| folder.is_oneseg_separate_recording_folder)
+            .count(),
+        1
+    );
+    assert_eq!(presets.presets[1].id, 1);
+    assert_eq!(presets.presets[1].name, "Custom");
+    assert_eq!(presets.presets[1].record_settings.priority, 5);
+}
+
+#[tokio::test]
+async fn list_channels_builds_snapshot_from_chset5_and_enum_service() {
+    let chset5 = "\
+Main TV\tNetwork\t32736\t32736\t1024\t1\t0\t1\t1\t0\n\
+Sub TV\tNetwork\t32736\t32736\t1025\t1\t0\t1\t1\t0\n\
+Radio\tNetwork\t4\t16625\t101\t2\t0\t1\t1\t0\n\
+Data\tNetwork\t32736\t32736\t1400\t192\t0\t1\t1\t0\n";
+    let services = [
+        ServiceInfo {
+            onid: 32736,
+            tsid: 32736,
+            sid: 1024,
+            service_type: 1,
+            partial_reception_flag: 0,
+            service_provider_name: "Provider".to_string(),
+            service_name: "Main TV".to_string(),
+            network_name: "Network".to_string(),
+            ts_name: "TS".to_string(),
+            remote_control_key_id: 1,
+        },
+        ServiceInfo {
+            onid: 32736,
+            tsid: 32736,
+            sid: 1025,
+            service_type: 1,
+            partial_reception_flag: 0,
+            service_provider_name: "Provider".to_string(),
+            service_name: "Sub TV".to_string(),
+            network_name: "Network".to_string(),
+            ts_name: "TS".to_string(),
+            remote_control_key_id: 1,
+        },
+    ];
+    let (addr, server) = spawn_command_sequence_server(vec![
+        (1060, chset5.as_bytes().to_vec()),
+        (1021, encode_services_for_test(&services)),
+    ])
+    .await;
+    let client = test_client(addr);
+
+    let channels = edcb_tools::flows::list_channels(&client)
+        .await
+        .expect("channels should build from current EDCB service data");
+    let payloads = server
+        .await
+        .expect("mock EDCB server task should complete without panicking");
+    let chset_name_bytes: Vec<_> = "ChSet5.txt"
+        .encode_utf16()
+        .flat_map(|unit| unit.to_le_bytes())
+        .collect();
+
+    assert!(
+        payloads[0]
+            .windows(chset_name_bytes.len())
+            .any(|window| window == chset_name_bytes),
+        "first request should be FileCopy for ChSet5.txt"
+    );
+    assert_eq!(channels.len(), 3);
+    assert_eq!(channels[0].id, "NID32736-SID1024");
+    assert_eq!(channels[0].display_channel_id, "gr011");
+    assert_eq!(channels[0].channel_number, "011");
+    assert_eq!(channels[0].remocon_id, 1);
+    assert_eq!(channels[0].service_key.sid, 1024);
+    assert!(!channels[0].is_subchannel);
+    assert_eq!(channels[1].display_channel_id, "gr012");
+    assert!(channels[1].is_subchannel);
+    assert_eq!(channels[2].display_channel_id, "bs101");
+    assert!(channels[2].is_radiochannel);
 }
 
 #[tokio::test]

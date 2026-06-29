@@ -12,8 +12,8 @@ use crate::{
     RecordingMode, SearchDateInfo, ServiceKey, ServiceRecordingMode, TimeTable, TimeTableQuery,
     flows,
     types::{
-        EventInfo, NotifySrvInfo, RecFileInfo, ReservationCondition, ReserveData, ServiceInfo,
-        TunerProcessStatusInfo, TunerReserveInfo,
+        Channel, EventInfo, NotifySrvInfo, RecFileInfo, RecordSettings, RecordSettingsPresets,
+        ReservationCondition, ReserveData, ServiceInfo, TunerProcessStatusInfo, TunerReserveInfo,
     },
 };
 
@@ -29,6 +29,9 @@ const CLI_EXAMPLES: &str = "EXAMPLES:
   edcb programs search --keyword ニュース --duration-min 30 --duration-max 120 --free-ca free
   edcb programs timetable --channel-type gr
   edcb programs timetable --service 32736:32736:1024 --start-time 2026-06-29T19:00:00+09:00 --end-time 2026-06-29T23:00:00+09:00
+  edcb channels
+  edcb recording defaults
+  edcb recording presets --json
   edcb reservation-conditions --json
   edcb reservation-conditions create --keyword ニュース --genre 0:1 --priority 4 --yes
   edcb reservation-conditions update 77 --keyword ニュース --duplicate-title-check same-channel --yes
@@ -56,6 +59,9 @@ pub enum CliCommand {
     RecordedGet(i32),
     ProgramsSearch(ProgramSearchQuery),
     ProgramsTimetable(TimeTableQuery),
+    Channels,
+    RecordingDefaults,
+    RecordingPresets,
     ReservationConditionsList,
     ReservationConditionGet(i32),
     ReservationConditionCreate {
@@ -289,6 +295,10 @@ enum RawCommand {
     Recorded(RecordedArgs),
     #[command(about = "Search programs or retrieve timetable data")]
     Programs(ProgramsArgs),
+    #[command(about = "List KonomiTV-style channel metadata")]
+    Channels,
+    #[command(about = "Inspect recording defaults and presets")]
+    Recording(RecordingArgs),
     #[command(about = "List or manage keyword auto reservation conditions")]
     ReservationConditions(ReservationConditionsArgs),
     #[command(about = "List tuner reservation state")]
@@ -311,6 +321,8 @@ impl RawCommand {
             Self::Reserves(args) => args.try_into_command(),
             Self::Recorded(args) => args.try_into_command(),
             Self::Programs(args) => args.try_into_command(),
+            Self::Channels => Ok(CliCommand::Channels),
+            Self::Recording(args) => Ok(args.into_command()),
             Self::ReservationConditions(args) => args.try_into_command(),
             Self::TunerReserves => Ok(CliCommand::TunerReserves),
             Self::TunerProcesses => Ok(CliCommand::TunerProcesses),
@@ -318,6 +330,28 @@ impl RawCommand {
             Self::NotifyStatus => Ok(CliCommand::NotifyStatus),
         }
     }
+}
+
+#[derive(Debug, Args)]
+struct RecordingArgs {
+    #[command(subcommand)]
+    command: RecordingCommand,
+}
+
+impl RecordingArgs {
+    fn into_command(self) -> CliCommand {
+        match self.command {
+            RecordingCommand::Defaults => CliCommand::RecordingDefaults,
+            RecordingCommand::Presets => CliCommand::RecordingPresets,
+        }
+    }
+}
+
+#[derive(Debug, Subcommand)]
+#[command(rename_all = "kebab-case")]
+enum RecordingCommand {
+    Defaults,
+    Presets,
 }
 
 #[derive(Debug, Args)]
@@ -909,6 +943,26 @@ pub async fn execute(invocation: CliInvocation) -> Result<String, CliError> {
                 format_timetable_plain(&value)
             })
         }
+        CliCommand::Channels => {
+            let value = flows::list_channels(&client).await.map_err(runtime_error)?;
+            render(&invocation.output, &value, || format_channels_plain(&value))
+        }
+        CliCommand::RecordingDefaults => {
+            let value = flows::get_recording_defaults(&client)
+                .await
+                .map_err(runtime_error)?;
+            render(&invocation.output, &value, || {
+                format_record_settings_plain(&value)
+            })
+        }
+        CliCommand::RecordingPresets => {
+            let value = flows::get_recording_presets(&client)
+                .await
+                .map_err(runtime_error)?;
+            render(&invocation.output, &value, || {
+                format_recording_presets_plain(&value)
+            })
+        }
         CliCommand::ReservationConditionsList => {
             let value = flows::list_reservation_conditions(&client)
                 .await
@@ -1146,6 +1200,65 @@ fn format_reservation_condition_plain(condition: &ReservationCondition) -> Strin
         condition.program_search_condition.is_enabled,
         condition.program_search_condition.keyword
     )
+}
+
+fn format_channels_plain(channels: &[Channel]) -> String {
+    channels
+        .iter()
+        .map(|channel| {
+            format!(
+                "{}\t{}:{}:{}\t{:?}\t{}\t{}\n",
+                channel.display_channel_id,
+                channel.service_key.onid,
+                channel.service_key.tsid,
+                channel.service_key.sid,
+                channel.channel_type,
+                channel.remocon_id,
+                channel.name
+            )
+        })
+        .collect()
+}
+
+fn format_record_settings_plain(settings: &RecordSettings) -> String {
+    format!(
+        "enabled={}\tpriority={}\tmode={:?}\tmargin={}:{}\tcaption={:?}\tdata={:?}\tpost={:?}\tfolders={}\n",
+        settings.is_enabled,
+        settings.priority,
+        settings.recording_mode,
+        settings
+            .recording_start_margin
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "default".to_string()),
+        settings
+            .recording_end_margin
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "default".to_string()),
+        settings.caption_recording_mode,
+        settings.data_broadcasting_recording_mode,
+        settings.post_recording_mode,
+        settings.recording_folders.len()
+    )
+}
+
+fn format_recording_presets_plain(presets: &RecordSettingsPresets) -> String {
+    let mut output = format!(
+        "global\tmargin={}:{}\tcaption={:?}\tdata={:?}\tpost={:?}\n",
+        presets.global_defaults.recording_start_margin,
+        presets.global_defaults.recording_end_margin,
+        presets.global_defaults.caption_recording_mode,
+        presets.global_defaults.data_broadcasting_recording_mode,
+        presets.global_defaults.post_recording_mode
+    );
+    for preset in &presets.presets {
+        output.push_str(&format!(
+            "{}\t{}\t{}",
+            preset.id,
+            preset.name,
+            format_record_settings_plain(&preset.record_settings)
+        ));
+    }
+    output
 }
 
 fn runtime_error(error: crate::EdcbError) -> CliError {

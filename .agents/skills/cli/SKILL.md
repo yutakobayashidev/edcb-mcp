@@ -51,6 +51,9 @@ CLI flags take precedence over environment variables.
 - Get one recorded item: `edcb recorded get <info-id>`
 - Search programs: `edcb programs search [search options]`
 - Get timetable programs: `edcb programs timetable [timetable options]`
+- List channel metadata: `edcb channels`
+- Get default recording settings: `edcb recording defaults`
+- Get recording presets from `EpgTimerSrv.ini`: `edcb recording presets`
 - Search program titles only: `edcb programs search --keyword <text> --title-only`
 - Search within one service:
   `edcb programs search --keyword <text> --service <onid:tsid:sid>`
@@ -106,6 +109,21 @@ Timetable options:
 - `--start-time <RFC3339 datetime>`
 - `--end-time <RFC3339 datetime>`
 - `--channel-type <gr|bs|cs|catv|sky|bs4k>`
+
+Use `channels` when the caller wants KonomiTV-style channel IDs without a DB:
+
+```sh
+edcb channels
+edcb --json channels
+```
+
+Use `recording defaults` for the current EDCB default reservation settings, and
+`recording presets` for `EpgTimerSrv.ini` presets:
+
+```sh
+edcb recording defaults
+edcb --json recording presets
+```
 
 ## Reservation Commands
 

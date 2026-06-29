@@ -43,6 +43,10 @@ pub fn parse_ch_set5(input: &str) -> Vec<ChSet5Item> {
                 partial_flag: fields[6].parse::<i32>().ok()? != 0,
                 epg_cap_flag: fields[7].parse::<i32>().ok()? != 0,
                 search_flag: fields[8].parse::<i32>().ok()? != 0,
+                remocon_id: fields
+                    .get(9)
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(0),
             })
         })
         .collect()
@@ -160,6 +164,7 @@ mod tests {
         assert_eq!(rows[0].onid, 1);
         assert!(!rows[0].partial_flag);
         assert!(rows[0].epg_cap_flag);
+        assert_eq!(rows[0].remocon_id, 0);
     }
 
     #[test]

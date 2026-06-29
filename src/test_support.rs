@@ -5,7 +5,8 @@ use crate::codec::{
     Writer, jst, write_auto_add_data, write_reserve_data, write_search_key_info, write_service_info,
 };
 use crate::types::{
-    AutoAddData, EventInfo, RecSettingData, ReserveData, SearchKeyInfo, ServiceInfo, ShortEventInfo,
+    AutoAddData, EventInfo, FileData, RecSettingData, ReserveData, SearchKeyInfo, ServiceInfo,
+    ShortEventInfo,
 };
 
 #[doc(hidden)]
@@ -98,6 +99,24 @@ pub fn encode_auto_add_list_for_test(items: &[AutoAddData]) -> Vec<u8> {
     let mut writer = Writer::new();
     writer.write_u16(5);
     writer.write_vector(items, write_auto_add_data);
+    writer.into_inner()
+}
+
+#[doc(hidden)]
+pub fn encode_file_list_for_test(files: &[FileData]) -> Vec<u8> {
+    let mut writer = Writer::new();
+    writer.write_u16(5);
+    writer.write_vector(files, |writer, file| {
+        writer.write_struct(|writer| {
+            writer.write_string(&file.name);
+            writer.write_i32(
+                i32::try_from(file.data.len())
+                    .expect("test file data length should fit in an EDCB frame"),
+            );
+            writer.write_i32(0);
+            writer.write_bytes(&file.data);
+        });
+    });
     writer.into_inner()
 }
 
