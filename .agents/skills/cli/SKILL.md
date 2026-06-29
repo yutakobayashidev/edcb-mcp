@@ -54,8 +54,12 @@ CLI flags take precedence over environment variables.
 - Search program titles only: `edcb programs search --keyword <text> --title-only`
 - Search within one service:
   `edcb programs search --keyword <text> --service <onid:tsid:sid>`
+- Search by numeric EDCB genre:
+  `edcb programs search --keyword <text> --genre <major:middle[:user_nibble]>`
 - Search by EDCB recurring weekday/time range:
   `edcb programs search --keyword <text> --date-range <start-dow:HH:MM-end-dow:HH:MM>`
+- List keyword auto reservation conditions: `edcb reservation-conditions`
+- Get one keyword auto reservation condition: `edcb reservation-conditions get <condition-id>`
 - List tuner reservations: `edcb tuner-reserves`
 - List tuner processes: `edcb tuner-processes`
 - List plugins: `edcb plugins <write|rec_name>`
@@ -76,10 +80,15 @@ Program search options use EDCB `SearchKeyInfo`/`SearchPg` semantics:
 - `--regex`
 - `--fuzzy`
 - `--service <onid:tsid:sid>` (repeatable)
+- `--genre <major:middle[:user_nibble]>` (repeatable)
+- `--exclude-genre-ranges`
 - `--date-range <start-dow:HH:MM-end-dow:HH:MM>` (repeatable, `0` is Sunday)
 - `--exclude-date-ranges`
 - `--duration-min <minutes>` and `--duration-max <minutes>`
 - `--free-ca <all|free|paid>`
+- `--search-enable` / `--search-disable`
+- `--duplicate-title-check <none|same-channel|all-channels>`
+- `--duplicate-title-check-days <days>`
 
 Do not invent `--from` or `--to` for program search. EDCB/KonomiTV date ranges
 are recurring weekday/time-of-day ranges, not absolute datetimes.
@@ -120,6 +129,20 @@ edcb reserves delete 1 --yes
 EDCB does not expose reservation dry-run. Use `reserves preview` for the
 client-side preview that builds the reservation payload without sending a
 mutation command.
+
+Keyword auto reservations are exposed as reservation conditions:
+
+```sh
+edcb reservation-conditions
+edcb reservation-conditions get 77
+edcb reservation-conditions create --keyword news --genre 0:1 --priority 4 --yes
+edcb reservation-conditions update 77 --keyword news --duplicate-title-check same-channel --yes
+edcb reservation-conditions delete 77 --yes
+```
+
+`reservation-conditions create` sends EDCB AutoAdd data. EDCB does not return
+the assigned AutoAdd ID from the add command, so list conditions afterwards when
+the assigned ID is needed.
 
 Recording options:
 

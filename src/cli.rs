@@ -6,12 +6,12 @@ use chrono::{DateTime, FixedOffset};
 use serde::Serialize;
 
 use crate::{
-    BroadcastType, ChannelType, EdcbClient, EventKey, PluginKind, PostRecordingMode,
-    ProgramSearchQuery, RecordSettingsPatch, RecordingMode, SearchDateInfo, ServiceKey,
-    ServiceRecordingMode, TimeTable, TimeTableQuery, flows,
+    BroadcastType, ChannelType, DuplicateTitleCheckScope, EdcbClient, EventKey, PluginKind,
+    PostRecordingMode, ProgramGenreRange, ProgramSearchQuery, RecordSettingsPatch, RecordingMode,
+    SearchDateInfo, ServiceKey, ServiceRecordingMode, TimeTable, TimeTableQuery, flows,
     types::{
-        EventInfo, NotifySrvInfo, RecFileInfo, ReserveData, ServiceInfo, TunerProcessStatusInfo,
-        TunerReserveInfo,
+        EventInfo, NotifySrvInfo, RecFileInfo, ReservationCondition, ReserveData, ServiceInfo,
+        TunerProcessStatusInfo, TunerReserveInfo,
     },
 };
 
@@ -25,6 +25,7 @@ pub enum OutputMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum CliCommand {
     Services,
     Reserves,
@@ -32,6 +33,18 @@ pub enum CliCommand {
     RecordedGet(i32),
     ProgramsSearch(ProgramSearchQuery),
     ProgramsTimetable(TimeTableQuery),
+    ReservationConditionsList,
+    ReservationConditionGet(i32),
+    ReservationConditionCreate {
+        query: ProgramSearchQuery,
+        options: RecordSettingsPatch,
+    },
+    ReservationConditionUpdate {
+        condition_id: i32,
+        query: Option<ProgramSearchQuery>,
+        options: RecordSettingsPatch,
+    },
+    ReservationConditionDelete(i32),
     ReserveGet(i32),
     ReservePreview {
         event_key: EventKey,
@@ -62,6 +75,7 @@ pub struct CliInvocation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum CliAction {
     Run(CliInvocation),
     Help,
@@ -181,10 +195,27 @@ where
             }
             "--json" => invocation.output = OutputMode::Json,
             "--plain" => invocation.output = OutputMode::Plain,
-            "--keyword" | "--exclude-keyword" | "--service" | "--date-range" | "--duration-min"
-            | "--duration-max" | "--free-ca" | "--event" | "--priority" | "--recording-mode"
-            | "--start-margin" | "--end-margin" | "--caption" | "--data" | "--post-recording"
-            | "--start-time" | "--end-time" | "--channel-type" => {
+            "--keyword"
+            | "--exclude-keyword"
+            | "--service"
+            | "--date-range"
+            | "--duration-min"
+            | "--duration-max"
+            | "--free-ca"
+            | "--genre"
+            | "--duplicate-title-check"
+            | "--duplicate-title-check-days"
+            | "--event"
+            | "--priority"
+            | "--recording-mode"
+            | "--start-margin"
+            | "--end-margin"
+            | "--caption"
+            | "--data"
+            | "--post-recording"
+            | "--start-time"
+            | "--end-time"
+            | "--channel-type" => {
                 let key = args[index].clone();
                 index += 1;
                 let value = args
@@ -197,7 +228,10 @@ where
             | "--case-sensitive"
             | "--regex"
             | "--fuzzy"
+            | "--exclude-genre-ranges"
             | "--exclude-date-ranges"
+            | "--search-enable"
+            | "--search-disable"
             | "--yes"
             | "--enable"
             | "--disable" => positionals.push(args[index].clone()),
@@ -236,6 +270,62 @@ fn parse_command(positionals: &[String]) -> Result<CliCommand, CliError> {
             Ok(CliCommand::ProgramsTimetable(parse_program_timetable(
                 rest,
             )?))
+        }
+        [command] if command == "reservation-conditions" => {
+            Ok(CliCommand::ReservationConditionsList)
+        }
+        [command, subcommand, condition_id]
+            if command == "reservation-conditions" && subcommand == "get" =>
+        {
+            Ok(CliCommand::ReservationConditionGet(parse_condition_id(
+                condition_id,
+            )?))
+        }
+        [command, subcommand, rest @ ..]
+            if command == "reservation-conditions" && subcommand == "create" =>
+        {
+            let (query, options) = parse_condition_search_and_options(rest)?;
+            if !rest.iter().any(|value| value == "--yes") {
+                return Err(CliError::invalid_usage(
+                    "reservation-conditions create requires --yes to confirm mutation",
+                ));
+            }
+            Ok(CliCommand::ReservationConditionCreate {
+                query: query.unwrap_or_default(),
+                options,
+            })
+        }
+        [command, subcommand, condition_id, rest @ ..]
+            if command == "reservation-conditions" && subcommand == "update" =>
+        {
+            let condition_id = parse_condition_id(condition_id)?;
+            let (query, options) = parse_condition_search_and_options(rest)?;
+            if !rest.iter().any(|value| value == "--yes") {
+                return Err(CliError::invalid_usage(
+                    "reservation-conditions update requires --yes to confirm mutation",
+                ));
+            }
+            Ok(CliCommand::ReservationConditionUpdate {
+                condition_id,
+                query,
+                options,
+            })
+        }
+        [command, subcommand, condition_id, rest @ ..]
+            if command == "reservation-conditions" && subcommand == "delete" =>
+        {
+            let condition_id = parse_condition_id(condition_id)?;
+            if let Some(value) = rest.iter().find(|value| value.as_str() != "--yes") {
+                return Err(CliError::invalid_usage(format!(
+                    "unknown reservation condition argument {value}"
+                )));
+            }
+            if !rest.iter().any(|value| value == "--yes") {
+                return Err(CliError::invalid_usage(
+                    "reservation-conditions delete requires --yes to confirm mutation",
+                ));
+            }
+            Ok(CliCommand::ReservationConditionDelete(condition_id))
         }
         [command, subcommand, rest @ ..] if command == "reserves" && subcommand == "preview" => {
             let (event_key, options) = parse_event_and_options(rest)?;
@@ -297,68 +387,147 @@ fn parse_program_search(args: &[String]) -> Result<ProgramSearchQuery, CliError>
     let mut query = ProgramSearchQuery::default();
     let mut index = 0;
     while index < args.len() {
-        match args[index].as_str() {
-            "--keyword" => {
-                index += 1;
-                query.keyword = args
-                    .get(index)
-                    .ok_or_else(|| CliError::invalid_usage("--keyword requires a value"))?
-                    .clone();
-            }
-            "--exclude-keyword" => {
-                index += 1;
-                query.exclude_keyword = args
-                    .get(index)
-                    .ok_or_else(|| CliError::invalid_usage("--exclude-keyword requires a value"))?
-                    .clone();
-            }
-            "--title-only" => query.title_only = true,
-            "--case-sensitive" => query.case_sensitive = true,
-            "--regex" => query.regex = true,
-            "--fuzzy" => query.fuzzy = true,
-            "--service" => {
-                index += 1;
-                query
-                    .service_ranges
-                    .get_or_insert_with(Vec::new)
-                    .push(parse_service_key(args.get(index).ok_or_else(|| {
-                        CliError::invalid_usage("--service requires onid:tsid:sid")
-                    })?)?);
-            }
-            "--date-range" => {
-                index += 1;
-                query
-                    .date_ranges
-                    .push(parse_search_date_range(args.get(index).ok_or_else(
-                        || {
-                            CliError::invalid_usage(
-                                "--date-range requires start-dow:HH:MM-end-dow:HH:MM",
-                            )
-                        },
-                    )?)?);
-            }
-            "--exclude-date-ranges" => query.exclude_date_ranges = true,
-            "--duration-min" => {
-                index += 1;
-                query.duration_min = Some(parse_u16_arg(args.get(index), "--duration-min")?);
-            }
-            "--duration-max" => {
-                index += 1;
-                query.duration_max = Some(parse_u16_arg(args.get(index), "--duration-max")?);
-            }
-            "--free-ca" => {
-                index += 1;
-                query.broadcast_type = parse_broadcast_type_arg(args.get(index), "--free-ca")?;
-            }
-            value => {
-                return Err(CliError::invalid_usage(format!(
-                    "unknown programs search argument {value}"
-                )));
-            }
+        if !is_program_search_option(args[index].as_str()) {
+            return Err(CliError::invalid_usage(format!(
+                "unknown programs search argument {}",
+                args[index]
+            )));
         }
+        parse_program_search_option(args, &mut index, &mut query)?;
         index += 1;
     }
     Ok(query)
+}
+
+fn parse_condition_search_and_options(
+    args: &[String],
+) -> Result<(Option<ProgramSearchQuery>, RecordSettingsPatch), CliError> {
+    let mut query = ProgramSearchQuery::default();
+    let mut has_search_options = false;
+    let mut options = RecordSettingsPatch::default();
+    let mut index = 0;
+    while index < args.len() {
+        if is_program_search_option(args[index].as_str()) {
+            has_search_options = true;
+            parse_program_search_option(args, &mut index, &mut query)?;
+        } else {
+            parse_record_settings_option(args, &mut index, &mut options)?;
+        }
+        index += 1;
+    }
+    Ok((has_search_options.then_some(query), options))
+}
+
+fn is_program_search_option(value: &str) -> bool {
+    matches!(
+        value,
+        "--keyword"
+            | "--exclude-keyword"
+            | "--title-only"
+            | "--case-sensitive"
+            | "--regex"
+            | "--fuzzy"
+            | "--service"
+            | "--genre"
+            | "--exclude-genre-ranges"
+            | "--date-range"
+            | "--exclude-date-ranges"
+            | "--duration-min"
+            | "--duration-max"
+            | "--free-ca"
+            | "--search-enable"
+            | "--search-disable"
+            | "--duplicate-title-check"
+            | "--duplicate-title-check-days"
+    )
+}
+
+fn parse_program_search_option(
+    args: &[String],
+    index: &mut usize,
+    query: &mut ProgramSearchQuery,
+) -> Result<(), CliError> {
+    match args[*index].as_str() {
+        "--keyword" => {
+            *index += 1;
+            query.keyword = args
+                .get(*index)
+                .ok_or_else(|| CliError::invalid_usage("--keyword requires a value"))?
+                .clone();
+        }
+        "--exclude-keyword" => {
+            *index += 1;
+            query.exclude_keyword = args
+                .get(*index)
+                .ok_or_else(|| CliError::invalid_usage("--exclude-keyword requires a value"))?
+                .clone();
+        }
+        "--title-only" => query.title_only = true,
+        "--case-sensitive" => query.case_sensitive = true,
+        "--regex" => query.regex = true,
+        "--fuzzy" => query.fuzzy = true,
+        "--service" => {
+            *index += 1;
+            query
+                .service_ranges
+                .get_or_insert_with(Vec::new)
+                .push(parse_service_key(args.get(*index).ok_or_else(|| {
+                    CliError::invalid_usage("--service requires onid:tsid:sid")
+                })?)?);
+        }
+        "--genre" => {
+            *index += 1;
+            query
+                .genre_ranges
+                .push(parse_program_genre_range(args.get(*index).ok_or_else(
+                    || CliError::invalid_usage("--genre requires major:middle[:user_nibble]"),
+                )?)?);
+        }
+        "--exclude-genre-ranges" => query.exclude_genre_ranges = true,
+        "--date-range" => {
+            *index += 1;
+            query
+                .date_ranges
+                .push(parse_search_date_range(args.get(*index).ok_or_else(
+                    || {
+                        CliError::invalid_usage(
+                            "--date-range requires start-dow:HH:MM-end-dow:HH:MM",
+                        )
+                    },
+                )?)?);
+        }
+        "--exclude-date-ranges" => query.exclude_date_ranges = true,
+        "--duration-min" => {
+            *index += 1;
+            query.duration_min = Some(parse_u16_arg(args.get(*index), "--duration-min")?);
+        }
+        "--duration-max" => {
+            *index += 1;
+            query.duration_max = Some(parse_u16_arg(args.get(*index), "--duration-max")?);
+        }
+        "--free-ca" => {
+            *index += 1;
+            query.broadcast_type = parse_broadcast_type_arg(args.get(*index), "--free-ca")?;
+        }
+        "--search-enable" => query.is_enabled = true,
+        "--search-disable" => query.is_enabled = false,
+        "--duplicate-title-check" => {
+            *index += 1;
+            query.duplicate_title_check_scope =
+                parse_duplicate_title_check_arg(args.get(*index), "--duplicate-title-check")?;
+        }
+        "--duplicate-title-check-days" => {
+            *index += 1;
+            query.duplicate_title_check_period_days =
+                parse_u16_arg(args.get(*index), "--duplicate-title-check-days")?;
+        }
+        value => {
+            return Err(CliError::invalid_usage(format!(
+                "unknown programs search argument {value}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn parse_program_timetable(args: &[String]) -> Result<TimeTableQuery, CliError> {
@@ -493,6 +662,31 @@ fn parse_service_key(value: &str) -> Result<ServiceKey, CliError> {
     value.parse().map_err(CliError::invalid_usage)
 }
 
+fn parse_program_genre_range(value: &str) -> Result<ProgramGenreRange, CliError> {
+    let parts: Vec<_> = value.split(':').collect();
+    if !(2..=3).contains(&parts.len()) {
+        return Err(CliError::invalid_usage(format!(
+            "genre must be major:middle[:user_nibble]: {value}"
+        )));
+    }
+    Ok(ProgramGenreRange {
+        major: parts[0]
+            .parse()
+            .map_err(|_| CliError::invalid_usage(format!("genre major must be u8: {value}")))?,
+        middle: parts[1]
+            .parse()
+            .map_err(|_| CliError::invalid_usage(format!("genre middle must be u8: {value}")))?,
+        user_nibble: parts
+            .get(2)
+            .map(|part| {
+                part.parse().map_err(|_| {
+                    CliError::invalid_usage(format!("genre user_nibble must be u16: {value}"))
+                })
+            })
+            .transpose()?,
+    })
+}
+
 fn parse_event_key(value: &str) -> Result<EventKey, CliError> {
     value.parse().map_err(CliError::invalid_usage)
 }
@@ -501,6 +695,14 @@ fn parse_reserve_id(value: &str) -> Result<i32, CliError> {
     value
         .parse()
         .map_err(|_| CliError::invalid_usage(format!("reserve-id must be an integer: {value}")))
+}
+
+fn parse_condition_id(value: &str) -> Result<i32, CliError> {
+    value.parse().map_err(|_| {
+        CliError::invalid_usage(format!(
+            "reservation-condition-id must be an integer: {value}"
+        ))
+    })
 }
 
 fn parse_u8_arg(value: Option<&String>, name: &str) -> Result<u8, CliError> {
@@ -532,6 +734,16 @@ fn parse_broadcast_type_arg(value: Option<&String>, name: &str) -> Result<Broadc
 }
 
 fn parse_channel_type_arg(value: Option<&String>, name: &str) -> Result<ChannelType, CliError> {
+    value
+        .ok_or_else(|| CliError::invalid_usage(format!("{name} requires a value")))?
+        .parse()
+        .map_err(CliError::invalid_usage)
+}
+
+fn parse_duplicate_title_check_arg(
+    value: Option<&String>,
+    name: &str,
+) -> Result<DuplicateTitleCheckScope, CliError> {
     value
         .ok_or_else(|| CliError::invalid_usage(format!("{name} requires a value")))?
         .parse()
@@ -684,6 +896,55 @@ pub async fn execute(invocation: CliInvocation) -> Result<String, CliError> {
                 .map_err(runtime_error)?;
             render(&invocation.output, &value, || {
                 format_timetable_plain(&value)
+            })
+        }
+        CliCommand::ReservationConditionsList => {
+            let value = flows::list_reservation_conditions(&client)
+                .await
+                .map_err(runtime_error)?;
+            render(&invocation.output, &value, || {
+                format_reservation_conditions_plain(&value)
+            })
+        }
+        CliCommand::ReservationConditionGet(condition_id) => {
+            let value = flows::get_reservation_condition(&client, condition_id)
+                .await
+                .map_err(runtime_error)?;
+            render(&invocation.output, &value, || {
+                format_reservation_condition_plain(&value)
+            })
+        }
+        CliCommand::ReservationConditionCreate { query, options } => {
+            let value = flows::create_reservation_condition(&client, &query, &options)
+                .await
+                .map_err(runtime_error)?;
+            render(&invocation.output, &value, || {
+                format_reservation_condition_plain(&value)
+            })
+        }
+        CliCommand::ReservationConditionUpdate {
+            condition_id,
+            query,
+            options,
+        } => {
+            let value = flows::update_reservation_condition(
+                &client,
+                condition_id,
+                query.as_ref(),
+                &options,
+            )
+            .await
+            .map_err(runtime_error)?;
+            render(&invocation.output, &value, || {
+                format_reservation_condition_plain(&value)
+            })
+        }
+        CliCommand::ReservationConditionDelete(condition_id) => {
+            let value = flows::delete_reservation_condition(&client, condition_id)
+                .await
+                .map_err(runtime_error)?;
+            render(&invocation.output, &value, || {
+                format_reservation_condition_plain(&value)
             })
         }
         CliCommand::ReserveGet(reserve_id) => {
@@ -859,6 +1120,23 @@ fn format_reservation_plain(reserve: &ReserveData) -> String {
     )
 }
 
+fn format_reservation_conditions_plain(conditions: &[ReservationCondition]) -> String {
+    conditions
+        .iter()
+        .map(format_reservation_condition_plain)
+        .collect()
+}
+
+fn format_reservation_condition_plain(condition: &ReservationCondition) -> String {
+    format!(
+        "{}\t{}\t{}\t{}\n",
+        condition.id,
+        condition.reservation_count,
+        condition.program_search_condition.is_enabled,
+        condition.program_search_condition.keyword
+    )
+}
+
 fn runtime_error(error: crate::EdcbError) -> CliError {
     CliError::runtime(error.to_string())
 }
@@ -982,6 +1260,9 @@ USAGE:
   edcb [global flags] recorded get <info-id>
   edcb [global flags] programs search [search options]
   edcb [global flags] programs timetable [timetable options]
+  edcb [global flags] reservation-conditions create [search options] [recording options] --yes
+  edcb [global flags] reservation-conditions update <condition-id> [search options] [recording options] --yes
+  edcb [global flags] reservation-conditions delete <condition-id> --yes
   edcb [global flags] reserves create --event <onid:tsid:sid:eid> [recording options] --yes
   edcb [global flags] reserves update <reserve-id> [recording options] --yes
   edcb [global flags] reserves delete <reserve-id> --yes
@@ -994,6 +1275,11 @@ COMMANDS:
   recorded get <info-id>
   programs search [search options]
   programs timetable [timetable options]
+  reservation-conditions
+  reservation-conditions get <condition-id>
+  reservation-conditions create [search options] [recording options] --yes
+  reservation-conditions update <condition-id> [search options] [recording options] --yes
+  reservation-conditions delete <condition-id> --yes
   reserves get <reserve-id>
   reserves preview --event <onid:tsid:sid:eid> [recording options]
   reserves create --event <onid:tsid:sid:eid> [recording options] --yes
@@ -1021,11 +1307,16 @@ PROGRAM SEARCH OPTIONS:
       --regex
       --fuzzy
       --service <onid:tsid:sid>                     Repeatable
+      --genre <major:middle[:user_nibble]>          Repeatable
+      --exclude-genre-ranges
       --date-range <start-dow:HH:MM-end-dow:HH:MM> Repeatable; 0 is Sunday
       --exclude-date-ranges
       --duration-min <minutes>
       --duration-max <minutes>
       --free-ca <all|free|paid>
+      --search-enable | --search-disable
+      --duplicate-title-check <none|same-channel|all-channels>
+      --duplicate-title-check-days <days>
 
 TIMETABLE OPTIONS:
       --service <onid:tsid:sid>          Repeatable
@@ -1052,6 +1343,9 @@ EXAMPLES:
   edcb programs search --keyword ニュース --duration-min 30 --duration-max 120 --free-ca free
   edcb programs timetable --channel-type gr
   edcb programs timetable --service 32736:32736:1024 --start-time 2026-06-29T19:00:00+09:00 --end-time 2026-06-29T23:00:00+09:00
+  edcb reservation-conditions --json
+  edcb reservation-conditions create --keyword ニュース --genre 0:1 --priority 4 --yes
+  edcb reservation-conditions update 77 --keyword ニュース --duplicate-title-check same-channel --yes
   edcb reserves get 1 --json
   edcb reserves preview --event 32736:32736:1024:4208
   edcb reserves create --event 32736:32736:1024:4208 --priority 4 --yes

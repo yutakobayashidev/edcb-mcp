@@ -1,9 +1,11 @@
 use chrono::TimeZone;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use crate::codec::{Writer, jst, write_reserve_data, write_search_key_info, write_service_info};
+use crate::codec::{
+    Writer, jst, write_auto_add_data, write_reserve_data, write_search_key_info, write_service_info,
+};
 use crate::types::{
-    EventInfo, RecSettingData, ReserveData, SearchKeyInfo, ServiceInfo, ShortEventInfo,
+    AutoAddData, EventInfo, RecSettingData, ReserveData, SearchKeyInfo, ServiceInfo, ShortEventInfo,
 };
 
 #[doc(hidden)]
@@ -88,6 +90,14 @@ pub fn encode_reserve_list_for_test(reserves: &[ReserveData]) -> Vec<u8> {
     let mut writer = Writer::new();
     writer.write_u16(5);
     writer.write_vector(reserves, write_reserve_data);
+    writer.into_inner()
+}
+
+#[doc(hidden)]
+pub fn encode_auto_add_list_for_test(items: &[AutoAddData]) -> Vec<u8> {
+    let mut writer = Writer::new();
+    writer.write_u16(5);
+    writer.write_vector(items, write_auto_add_data);
     writer.into_inner()
 }
 

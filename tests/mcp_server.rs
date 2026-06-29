@@ -3,9 +3,11 @@ use std::time::Duration;
 
 use chrono::DateTime;
 use edcb_tools::{
-    BroadcastType, ChannelType, ProgramSearchQuery, SearchDateInfo, ServiceKey, TimeTableQuery,
+    BroadcastType, ChannelType, DuplicateTitleCheckScope, ProgramGenreRange, ProgramSearchQuery,
+    SearchDateInfo, ServiceKey, TimeTableQuery,
     mcp::{
-        EdcbMcpServer, GetTimetableParam, PluginKindParam, SearchProgramsDateParam,
+        CreateReservationConditionParam, EdcbMcpServer, GetTimetableParam, PluginKindParam,
+        ReservationConditionIdParam, SearchProgramsDateParam, SearchProgramsGenreParam,
         SearchProgramsParam, SearchProgramsServiceParam, ServerConfig,
     },
 };
@@ -147,11 +149,18 @@ fn search_programs_param_parses_extended_conditions() {
         is_case_sensitive: true,
         is_fuzzy_search_enabled: true,
         is_regex_search_enabled: true,
+        is_enabled: false,
         service_ranges: Some(vec![SearchProgramsServiceParam {
             network_id: 1,
             transport_stream_id: 2,
             service_id: 3,
         }]),
+        genre_ranges: Some(vec![SearchProgramsGenreParam {
+            major: 14,
+            middle: 0,
+            user_nibble: Some(4660),
+        }]),
+        is_exclude_genre_ranges: true,
         date_ranges: Some(vec![SearchProgramsDateParam {
             start_day_of_week: 1,
             start_hour: 19,
@@ -164,6 +173,8 @@ fn search_programs_param_parses_extended_conditions() {
         duration_range_min: Some(30),
         duration_range_max: Some(120),
         broadcast_type: BroadcastType::FreeOnly,
+        duplicate_title_check_scope: DuplicateTitleCheckScope::AllChannels,
+        duplicate_title_check_period_days: 6,
     }
     .try_into_query()
     .expect("MCP program search params should map to query");
@@ -182,6 +193,12 @@ fn search_programs_param_parses_extended_conditions() {
                 tsid: 2,
                 sid: 3,
             }]),
+            genre_ranges: vec![ProgramGenreRange {
+                major: 14,
+                middle: 0,
+                user_nibble: Some(4660),
+            }],
+            exclude_genre_ranges: true,
             date_ranges: vec![SearchDateInfo {
                 start_day_of_week: 1,
                 start_hour: 19,
@@ -194,6 +211,9 @@ fn search_programs_param_parses_extended_conditions() {
             duration_min: Some(30),
             duration_max: Some(120),
             broadcast_type: BroadcastType::FreeOnly,
+            is_enabled: false,
+            duplicate_title_check_scope: DuplicateTitleCheckScope::AllChannels,
+            duplicate_title_check_period_days: 6,
         }
     );
 }
@@ -207,7 +227,10 @@ fn search_programs_param_rejects_invalid_date_ranges() {
         is_case_sensitive: false,
         is_fuzzy_search_enabled: false,
         is_regex_search_enabled: false,
+        is_enabled: true,
         service_ranges: None,
+        genre_ranges: None,
+        is_exclude_genre_ranges: false,
         date_ranges: Some(vec![SearchProgramsDateParam {
             start_day_of_week: 7,
             start_hour: 19,
@@ -220,11 +243,59 @@ fn search_programs_param_rejects_invalid_date_ranges() {
         duration_range_min: None,
         duration_range_max: None,
         broadcast_type: BroadcastType::All,
+        duplicate_title_check_scope: DuplicateTitleCheckScope::None,
+        duplicate_title_check_period_days: 6,
     }
     .try_into_query()
     .expect_err("invalid MCP date range should fail");
 
     assert!(error.contains("date range"));
+}
+
+#[test]
+fn reservation_condition_params_map_to_query_and_ids() {
+    let params = CreateReservationConditionParam {
+        condition: SearchProgramsParam {
+            keyword: "ニュース".to_string(),
+            exclude_keyword: String::new(),
+            is_title_only: true,
+            is_case_sensitive: false,
+            is_fuzzy_search_enabled: false,
+            is_regex_search_enabled: false,
+            is_enabled: true,
+            service_ranges: None,
+            genre_ranges: Some(vec![SearchProgramsGenreParam {
+                major: 0,
+                middle: 1,
+                user_nibble: None,
+            }]),
+            is_exclude_genre_ranges: false,
+            date_ranges: None,
+            is_exclude_date_ranges: false,
+            duration_range_min: None,
+            duration_range_max: None,
+            broadcast_type: BroadcastType::All,
+            duplicate_title_check_scope: DuplicateTitleCheckScope::None,
+            duplicate_title_check_period_days: 6,
+        },
+        options: None,
+    };
+    let condition_id = ReservationConditionIdParam { condition_id: 77 };
+    let query = params
+        .condition
+        .try_into_query()
+        .expect("reservation condition search params should map");
+
+    assert_eq!(query.keyword, "ニュース");
+    assert_eq!(
+        query.genre_ranges,
+        vec![ProgramGenreRange {
+            major: 0,
+            middle: 1,
+            user_nibble: None,
+        }]
+    );
+    assert_eq!(condition_id.condition_id, 77);
 }
 
 #[test]
@@ -278,13 +349,17 @@ fn mcp_server_exposes_v1_tools() {
         tool_names,
         vec![
             "create_reservation",
+            "create_reservation_condition",
             "delete_reservation",
+            "delete_reservation_condition",
             "get_notify_status",
             "get_recorded_info",
             "get_reservation",
+            "get_reservation_condition",
             "get_timetable",
             "list_plugins",
             "list_recorded",
+            "list_reservation_conditions",
             "list_reserves",
             "list_services",
             "list_tuner_processes",
@@ -292,6 +367,7 @@ fn mcp_server_exposes_v1_tools() {
             "preview_reservation",
             "search_programs",
             "update_reservation",
+            "update_reservation_condition",
         ]
     );
 }

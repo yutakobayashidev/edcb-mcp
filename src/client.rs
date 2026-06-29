@@ -8,8 +8,8 @@ use crate::codec::{
     Reader, Writer, read_auto_add_data, read_event_info, read_file_data, read_manual_auto_add_data,
     read_notify_srv_info, read_nw_play_time_shift_info, read_rec_file_info, read_reserve_data,
     read_service_event_info, read_service_info, read_tuner_process_status_info,
-    read_tuner_reserve_info, write_i64_vector, write_reserve_data, write_search_key_info,
-    write_string_vector,
+    read_tuner_reserve_info, write_auto_add_data, write_i64_vector, write_reserve_data,
+    write_search_key_info, write_string_vector,
 };
 use crate::error::{EdcbError, Result};
 use crate::types::*;
@@ -257,6 +257,42 @@ impl EdcbClient {
         read_versioned(&body, |reader| reader.read_vector(read_auto_add_data))
     }
 
+    pub async fn add_auto_add(&self, data: &AutoAddData) -> Result<()> {
+        self.add_auto_adds(std::slice::from_ref(data)).await
+    }
+
+    pub async fn add_auto_adds(&self, data_list: &[AutoAddData]) -> Result<()> {
+        self.send_cmd2(CMD_EPG_SRV_ADD_AUTO_ADD2, |writer| {
+            writer.write_vector(data_list, write_auto_add_data)
+        })
+        .await?;
+        Ok(())
+    }
+
+    pub async fn change_auto_add(&self, data: &AutoAddData) -> Result<()> {
+        self.change_auto_adds(std::slice::from_ref(data)).await
+    }
+
+    pub async fn change_auto_adds(&self, data_list: &[AutoAddData]) -> Result<()> {
+        self.send_cmd2(CMD_EPG_SRV_CHG_AUTO_ADD2, |writer| {
+            writer.write_vector(data_list, write_auto_add_data)
+        })
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_auto_add(&self, data_id: i32) -> Result<()> {
+        self.delete_auto_adds(&[data_id]).await
+    }
+
+    pub async fn delete_auto_adds(&self, data_ids: &[i32]) -> Result<()> {
+        self.send_cmd(CMD_EPG_SRV_DEL_AUTO_ADD, |writer| {
+            writer.write_vector(data_ids, |writer, data_id| writer.write_i32(*data_id))
+        })
+        .await?;
+        Ok(())
+    }
+
     pub async fn enum_manual_add(&self) -> Result<Vec<ManualAutoAddData>> {
         let body = self.send_cmd2(CMD_EPG_SRV_ENUM_MANU_ADD2, |_| {}).await?;
         read_versioned(&body, |reader| {
@@ -352,9 +388,6 @@ const _: () = {
     let _ = CMD_EPG_SRV_ADD_RESERVE2;
     let _ = CMD_EPG_SRV_CHG_RESERVE2;
     let _ = CMD_EPG_SRV_CHG_PROTECT_RECINFO2;
-    let _ = CMD_EPG_SRV_ADD_AUTO_ADD2;
-    let _ = CMD_EPG_SRV_CHG_AUTO_ADD2;
-    let _ = CMD_EPG_SRV_DEL_AUTO_ADD;
     let _ = CMD_EPG_SRV_ADD_MANU_ADD2;
     let _ = CMD_EPG_SRV_CHG_MANU_ADD2;
     let _ = CMD_EPG_SRV_DEL_MANU_ADD;

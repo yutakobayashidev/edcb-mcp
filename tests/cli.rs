@@ -2,8 +2,9 @@ use std::time::Duration;
 
 use chrono::DateTime;
 use edcb_tools::{
-    BroadcastType, ChannelType, EventKey, PluginKind, ProgramSearchQuery, RecordingMode,
-    SearchDateInfo, ServiceKey, ServiceRecordingMode, TimeTableQuery,
+    BroadcastType, ChannelType, DuplicateTitleCheckScope, EventKey, PluginKind, ProgramGenreRange,
+    ProgramSearchQuery, RecordingMode, SearchDateInfo, ServiceKey, ServiceRecordingMode,
+    TimeTableQuery,
     cli::{CliAction, CliCommand, CliInvocation, OutputMode, format_services_plain},
     types::ServiceInfo,
 };
@@ -148,6 +149,16 @@ fn parses_extended_program_search_conditions() {
             "120",
             "--free-ca",
             "free",
+            "--genre",
+            "0:1",
+            "--genre",
+            "14:0:4660",
+            "--exclude-genre-ranges",
+            "--search-disable",
+            "--duplicate-title-check",
+            "all-channels",
+            "--duplicate-title-check-days",
+            "6",
         ],
         empty_env(),
     )
@@ -184,9 +195,114 @@ fn parses_extended_program_search_conditions() {
                 duration_min: Some(30),
                 duration_max: Some(120),
                 broadcast_type: BroadcastType::FreeOnly,
+                genre_ranges: vec![
+                    ProgramGenreRange {
+                        major: 0,
+                        middle: 1,
+                        user_nibble: None,
+                    },
+                    ProgramGenreRange {
+                        major: 14,
+                        middle: 0,
+                        user_nibble: Some(4660),
+                    },
+                ],
+                exclude_genre_ranges: true,
+                is_enabled: false,
+                duplicate_title_check_scope: DuplicateTitleCheckScope::AllChannels,
+                duplicate_title_check_period_days: 6,
             }),
         })
     );
+}
+
+#[test]
+fn parses_reservation_condition_commands() {
+    let create = CliAction::from_args_and_env(
+        [
+            "edcb",
+            "reservation-conditions",
+            "create",
+            "--keyword",
+            "ニュース",
+            "--genre",
+            "0:1",
+            "--priority",
+            "4",
+            "--yes",
+        ],
+        empty_env(),
+    )
+    .expect("reservation condition create command should parse");
+    let update = CliAction::from_args_and_env(
+        [
+            "edcb",
+            "reservation-conditions",
+            "update",
+            "77",
+            "--keyword",
+            "スポーツ",
+            "--disable",
+            "--yes",
+        ],
+        empty_env(),
+    )
+    .expect("reservation condition update command should parse");
+    let delete = CliAction::from_args_and_env(
+        ["edcb", "reservation-conditions", "delete", "77", "--yes"],
+        empty_env(),
+    )
+    .expect("reservation condition delete command should parse");
+
+    assert!(matches!(
+        create,
+        CliAction::Run(CliInvocation {
+            command: CliCommand::ReservationConditionCreate { query, options },
+            ..
+        }) if query.keyword == "ニュース"
+            && query.genre_ranges == vec![ProgramGenreRange {
+                major: 0,
+                middle: 1,
+                user_nibble: None,
+            }]
+            && options.priority == Some(4)
+    ));
+    assert!(matches!(
+        update,
+        CliAction::Run(CliInvocation {
+            command: CliCommand::ReservationConditionUpdate {
+                condition_id: 77,
+                query: Some(query),
+                options,
+            },
+            ..
+        }) if query.keyword == "スポーツ" && options.is_enabled == Some(false)
+    ));
+    assert!(matches!(
+        delete,
+        CliAction::Run(CliInvocation {
+            command: CliCommand::ReservationConditionDelete(77),
+            ..
+        })
+    ));
+}
+
+#[test]
+fn reservation_condition_mutations_require_confirmation() {
+    let error = CliAction::from_args_and_env(
+        [
+            "edcb",
+            "reservation-conditions",
+            "create",
+            "--keyword",
+            "ニュース",
+        ],
+        empty_env(),
+    )
+    .expect_err("reservation condition creation should require --yes");
+
+    assert_eq!(error.exit_code, 2);
+    assert!(error.message.contains("--yes"));
 }
 
 #[test]

@@ -5,10 +5,11 @@ use chrono::{DateTime, Datelike, Duration as ChronoDuration, FixedOffset, Utc};
 use crate::client::EdcbClient;
 use crate::error::{EdcbError, Result};
 use crate::types::{
-    BroadcastType, ChannelType, EventInfo, EventKey, PostRecordingMode, ProgramSearchQuery,
-    RecFileSetInfo, RecSettingData, RecordSettingsPatch, RecordingAvailability, RecordingFolder,
-    RecordingMode, ReservationStatus, ReserveData, SearchDateInfo, SearchKeyInfo, ServiceInfo,
-    ServiceKey, ServiceRecordingMode, TimeTable, TimeTableChannel, TimeTableDateRange,
+    AutoAddData, BroadcastType, ChannelType, ContentData, DuplicateTitleCheckScope, EventInfo,
+    EventKey, PostRecordingMode, ProgramGenreRange, ProgramSearchQuery, RecFileSetInfo,
+    RecSettingData, RecordSettingsPatch, RecordingAvailability, RecordingFolder, RecordingMode,
+    ReservationCondition, ReservationStatus, ReserveData, SearchDateInfo, SearchKeyInfo,
+    ServiceInfo, ServiceKey, ServiceRecordingMode, TimeTable, TimeTableChannel, TimeTableDateRange,
     TimeTableProgram, TimeTableProgramReservation, TimeTableQuery, TimeTableSubchannel,
 };
 use crate::util::datetime_to_file_time;
@@ -41,11 +42,17 @@ pub async fn search_programs(
 pub fn program_search_query_to_search_key(query: &ProgramSearchQuery) -> Result<SearchKeyInfo> {
     validate_program_search_query(query)?;
     Ok(SearchKeyInfo {
+        key_disabled: !query.is_enabled,
         and_key: query.keyword.clone(),
         not_key: query.exclude_keyword.clone(),
         case_sensitive: query.case_sensitive,
         reg_exp_flag: query.regex,
         title_only_flag: query.title_only,
+        content_list: query
+            .genre_ranges
+            .iter()
+            .map(program_genre_to_content_data)
+            .collect(),
         date_list: query.date_ranges.clone(),
         service_list: query
             .service_ranges
@@ -61,9 +68,91 @@ pub fn program_search_query_to_search_key(query: &ProgramSearchQuery) -> Result<
             BroadcastType::FreeOnly => 1,
             BroadcastType::PaidOnly => 2,
         },
+        not_contet_flag: query.exclude_genre_ranges,
+        chk_rec_end: query.duplicate_title_check_scope != DuplicateTitleCheckScope::None,
+        chk_rec_day: query.duplicate_title_check_period_days,
+        chk_rec_no_service: query.duplicate_title_check_scope
+            == DuplicateTitleCheckScope::AllChannels,
         chk_duration_min: query.duration_min.unwrap_or_default(),
         chk_duration_max: query.duration_max.unwrap_or_default(),
         ..SearchKeyInfo::default()
+    })
+}
+
+pub fn program_search_query_from_search_key(key: &SearchKeyInfo) -> Result<ProgramSearchQuery> {
+    let service_ranges = key
+        .service_list
+        .iter()
+        .map(|value| service_key_from_search_id(*value))
+        .collect::<Result<Vec<_>>>()?;
+    let genre_ranges = key
+        .content_list
+        .iter()
+        .map(content_data_to_program_genre)
+        .collect::<Result<Vec<_>>>()?;
+    Ok(ProgramSearchQuery {
+        is_enabled: !key.key_disabled,
+        keyword: key.and_key.clone(),
+        exclude_keyword: key.not_key.clone(),
+        title_only: key.title_only_flag,
+        case_sensitive: key.case_sensitive,
+        regex: key.reg_exp_flag,
+        fuzzy: key.aimai_flag,
+        service_ranges: Some(service_ranges),
+        genre_ranges,
+        exclude_genre_ranges: key.not_contet_flag,
+        date_ranges: key.date_list.clone(),
+        exclude_date_ranges: key.not_date_flag,
+        duration_min: (key.chk_duration_min > 0).then_some(key.chk_duration_min),
+        duration_max: (key.chk_duration_max > 0).then_some(key.chk_duration_max),
+        broadcast_type: match key.free_ca_flag {
+            0 => BroadcastType::All,
+            1 => BroadcastType::FreeOnly,
+            2 => BroadcastType::PaidOnly,
+            value => {
+                return Err(EdcbError::InvalidInput(format!(
+                    "unsupported EDCB free_ca_flag: {value}"
+                )));
+            }
+        },
+        duplicate_title_check_scope: if !key.chk_rec_end {
+            DuplicateTitleCheckScope::None
+        } else if key.chk_rec_no_service {
+            DuplicateTitleCheckScope::AllChannels
+        } else {
+            DuplicateTitleCheckScope::SameChannelOnly
+        },
+        duplicate_title_check_period_days: key.chk_rec_day,
+    })
+}
+
+fn program_genre_to_content_data(genre: &ProgramGenreRange) -> ContentData {
+    ContentData {
+        content_nibble: (u16::from(genre.major) << 8) | u16::from(genre.middle),
+        user_nibble: genre.user_nibble.unwrap_or_default(),
+    }
+}
+
+fn content_data_to_program_genre(content: &ContentData) -> Result<ProgramGenreRange> {
+    Ok(ProgramGenreRange {
+        major: u8::try_from((content.content_nibble >> 8) & 0x00ff)
+            .expect("content major nibble is masked to u8"),
+        middle: u8::try_from(content.content_nibble & 0x00ff)
+            .expect("content middle nibble is masked to u8"),
+        user_nibble: (content.user_nibble != 0).then_some(content.user_nibble),
+    })
+}
+
+fn service_key_from_search_id(value: i64) -> Result<ServiceKey> {
+    let value = u64::try_from(value).map_err(|_| {
+        EdcbError::InvalidInput(format!(
+            "EDCB service search id must be non-negative: {value}"
+        ))
+    })?;
+    Ok(ServiceKey {
+        onid: u16::try_from((value >> 32) & 0xffff).expect("masked ONID fits in u16"),
+        tsid: u16::try_from((value >> 16) & 0xffff).expect("masked TSID fits in u16"),
+        sid: u16::try_from(value & 0xffff).expect("masked SID fits in u16"),
     })
 }
 
@@ -470,6 +559,12 @@ fn validate_program_search_query(query: &ProgramSearchQuery) -> Result<()> {
     for date in &query.date_ranges {
         validate_search_date(date)?;
     }
+    if query.duplicate_title_check_period_days > 9999 {
+        return Err(EdcbError::InvalidInput(format!(
+            "duplicate_title_check_period_days must be in 0..=9999: {}",
+            query.duplicate_title_check_period_days
+        )));
+    }
     Ok(())
 }
 
@@ -513,6 +608,105 @@ pub async fn delete_reservation(client: &EdcbClient, reserve_id: i32) -> Result<
     let reserve = get_reservation(client, reserve_id).await?;
     client.delete_reserve(reserve_id).await?;
     Ok(reserve)
+}
+
+pub async fn list_reservation_conditions(client: &EdcbClient) -> Result<Vec<ReservationCondition>> {
+    client
+        .enum_auto_add()
+        .await?
+        .iter()
+        .map(auto_add_data_to_reservation_condition)
+        .collect()
+}
+
+pub async fn get_reservation_condition(
+    client: &EdcbClient,
+    condition_id: i32,
+) -> Result<ReservationCondition> {
+    let data = get_auto_add_data(client, condition_id).await?;
+    auto_add_data_to_reservation_condition(&data)
+}
+
+pub async fn create_reservation_condition(
+    client: &EdcbClient,
+    query: &ProgramSearchQuery,
+    options: &RecordSettingsPatch,
+) -> Result<ReservationCondition> {
+    let default = client.get_default_reserve().await?;
+    let mut rec_setting = default.rec_setting;
+    apply_record_settings_patch(&mut rec_setting, options)?;
+    let data = AutoAddData {
+        data_id: 0,
+        search_info: reservation_condition_search_key(client, query).await?,
+        rec_setting,
+        add_count: 0,
+    };
+    client.add_auto_add(&data).await?;
+    auto_add_data_to_reservation_condition(&data)
+}
+
+pub async fn update_reservation_condition(
+    client: &EdcbClient,
+    condition_id: i32,
+    query: Option<&ProgramSearchQuery>,
+    options: &RecordSettingsPatch,
+) -> Result<ReservationCondition> {
+    if query.is_none() && options.is_empty() {
+        return Err(EdcbError::InvalidInput(
+            "reservation condition update requires a search condition or at least one recording option"
+                .to_string(),
+        ));
+    }
+
+    let mut data = get_auto_add_data(client, condition_id).await?;
+    if let Some(query) = query {
+        data.search_info = reservation_condition_search_key(client, query).await?;
+    }
+    apply_record_settings_patch(&mut data.rec_setting, options)?;
+    client.change_auto_add(&data).await?;
+    get_reservation_condition(client, condition_id).await
+}
+
+pub async fn delete_reservation_condition(
+    client: &EdcbClient,
+    condition_id: i32,
+) -> Result<ReservationCondition> {
+    let data = get_auto_add_data(client, condition_id).await?;
+    let condition = auto_add_data_to_reservation_condition(&data)?;
+    client.delete_auto_add(condition_id).await?;
+    Ok(condition)
+}
+
+pub fn auto_add_data_to_reservation_condition(data: &AutoAddData) -> Result<ReservationCondition> {
+    Ok(ReservationCondition {
+        id: data.data_id,
+        reservation_count: data.add_count,
+        program_search_condition: program_search_query_from_search_key(&data.search_info)?,
+        record_settings: data.rec_setting.clone(),
+    })
+}
+
+async fn get_auto_add_data(client: &EdcbClient, condition_id: i32) -> Result<AutoAddData> {
+    client
+        .enum_auto_add()
+        .await?
+        .into_iter()
+        .find(|data| data.data_id == condition_id)
+        .ok_or_else(|| {
+            EdcbError::InvalidInput(format!("reservation condition not found: {condition_id}"))
+        })
+}
+
+async fn reservation_condition_search_key(
+    client: &EdcbClient,
+    query: &ProgramSearchQuery,
+) -> Result<SearchKeyInfo> {
+    if query.service_ranges.is_some() {
+        return program_search_query_to_search_key(query);
+    }
+    let mut query = query.clone();
+    query.service_ranges = Some(default_search_services(client).await?);
+    program_search_query_to_search_key(&query)
 }
 
 pub async fn preview_reservation(client: &EdcbClient, event_key: EventKey) -> Result<ReserveData> {

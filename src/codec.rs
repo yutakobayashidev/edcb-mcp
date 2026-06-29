@@ -278,6 +278,18 @@ pub(crate) fn write_string_vector(writer: &mut Writer, values: &[String]) {
 }
 
 pub(crate) fn write_search_key_info(writer: &mut Writer, value: &SearchKeyInfo) {
+    write_search_key_info_inner(writer, value, false);
+}
+
+fn write_search_key_info2(writer: &mut Writer, value: &SearchKeyInfo) {
+    write_search_key_info_inner(writer, value, true);
+}
+
+fn write_search_key_info_inner(
+    writer: &mut Writer,
+    value: &SearchKeyInfo,
+    include_recording_checks: bool,
+) {
     writer.write_struct(|writer| {
         let chk_duration = (u32::from(value.chk_duration_min) * 10000
             + u32::from(value.chk_duration_max))
@@ -309,6 +321,15 @@ pub(crate) fn write_search_key_info(writer: &mut Writer, value: &SearchKeyInfo) 
         writer.write_u8(u8::from(value.not_contet_flag));
         writer.write_u8(u8::from(value.not_date_flag));
         writer.write_u8(value.free_ca_flag);
+        if include_recording_checks {
+            writer.write_u8(u8::from(value.chk_rec_end));
+            let chk_rec_day = if value.chk_rec_no_service {
+                40000 + value.chk_rec_day % 10000
+            } else {
+                value.chk_rec_day
+            };
+            writer.write_u16(chk_rec_day);
+        }
     });
 }
 
@@ -832,6 +853,15 @@ pub(crate) fn read_auto_add_data(reader: &mut Reader<'_>) -> Result<AutoAddData>
             add_count: reader.read_i32()?,
         })
     })
+}
+
+pub(crate) fn write_auto_add_data(writer: &mut Writer, value: &AutoAddData) {
+    writer.write_struct(|writer| {
+        writer.write_i32(value.data_id);
+        write_search_key_info2(writer, &value.search_info);
+        write_rec_setting_data(writer, &value.rec_setting);
+        writer.write_i32(value.add_count);
+    });
 }
 
 pub(crate) fn read_manual_auto_add_data(reader: &mut Reader<'_>) -> Result<ManualAutoAddData> {

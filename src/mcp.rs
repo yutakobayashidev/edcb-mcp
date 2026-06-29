@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crate::{
-    BroadcastType, ChannelType, EdcbClient, EventKey, PluginKind, ProgramSearchQuery,
-    RecordSettingsPatch, SearchDateInfo, ServiceKey, TimeTableQuery, flows,
+    BroadcastType, ChannelType, DuplicateTitleCheckScope, EdcbClient, EventKey, PluginKind,
+    ProgramGenreRange, ProgramSearchQuery, RecordSettingsPatch, SearchDateInfo, ServiceKey,
+    TimeTableQuery, flows,
 };
 use chrono::{DateTime, FixedOffset};
 use rmcp::{
@@ -125,6 +126,11 @@ pub struct ReservationIdParam {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ReservationConditionIdParam {
+    pub condition_id: i32,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PluginKindParam {
     pub kind: String,
 }
@@ -143,6 +149,8 @@ impl PluginKindParam {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SearchProgramsParam {
+    #[serde(default = "default_true")]
+    pub is_enabled: bool,
     #[serde(default)]
     pub keyword: String,
     #[serde(default)]
@@ -156,6 +164,9 @@ pub struct SearchProgramsParam {
     #[serde(default)]
     pub is_regex_search_enabled: bool,
     pub service_ranges: Option<Vec<SearchProgramsServiceParam>>,
+    pub genre_ranges: Option<Vec<SearchProgramsGenreParam>>,
+    #[serde(default)]
+    pub is_exclude_genre_ranges: bool,
     pub date_ranges: Option<Vec<SearchProgramsDateParam>>,
     #[serde(default)]
     pub is_exclude_date_ranges: bool,
@@ -163,6 +174,10 @@ pub struct SearchProgramsParam {
     pub duration_range_max: Option<u16>,
     #[serde(default)]
     pub broadcast_type: BroadcastType,
+    #[serde(default)]
+    pub duplicate_title_check_scope: DuplicateTitleCheckScope,
+    #[serde(default = "default_duplicate_title_check_period_days")]
+    pub duplicate_title_check_period_days: u16,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -170,6 +185,13 @@ pub struct SearchProgramsServiceParam {
     pub network_id: u16,
     pub transport_stream_id: u16,
     pub service_id: u16,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SearchProgramsGenreParam {
+    pub major: u8,
+    pub middle: u8,
+    pub user_nibble: Option<u16>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -194,6 +216,17 @@ impl SearchProgramsParam {
                 })
                 .collect()
         });
+        let genre_ranges = self
+            .genre_ranges
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .map(|genre| ProgramGenreRange {
+                major: genre.major,
+                middle: genre.middle,
+                user_nibble: genre.user_nibble,
+            })
+            .collect();
         let date_ranges = self
             .date_ranges
             .as_ref()
@@ -213,7 +246,13 @@ impl SearchProgramsParam {
                     .to_string(),
             );
         }
+        if self.duplicate_title_check_period_days > 9999 {
+            return Err(
+                "program search duplicate_title_check_period_days must be in 0..=9999".to_string(),
+            );
+        }
         Ok(ProgramSearchQuery {
+            is_enabled: self.is_enabled,
             keyword: self.keyword.clone(),
             exclude_keyword: self.exclude_keyword.clone(),
             title_only: self.is_title_only,
@@ -221,13 +260,25 @@ impl SearchProgramsParam {
             regex: self.is_regex_search_enabled,
             fuzzy: self.is_fuzzy_search_enabled,
             service_ranges,
+            genre_ranges,
+            exclude_genre_ranges: self.is_exclude_genre_ranges,
             date_ranges,
             exclude_date_ranges: self.is_exclude_date_ranges,
             duration_min: self.duration_range_min,
             duration_max: self.duration_range_max,
             broadcast_type: self.broadcast_type,
+            duplicate_title_check_scope: self.duplicate_title_check_scope,
+            duplicate_title_check_period_days: self.duplicate_title_check_period_days,
         })
     }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_duplicate_title_check_period_days() -> u16 {
+    6
 }
 
 impl SearchProgramsDateParam {
@@ -303,6 +354,19 @@ impl ReservationEventParam {
 pub struct ReservationUpdateParam {
     pub reserve_id: i32,
     pub options: RecordSettingsPatch,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CreateReservationConditionParam {
+    pub condition: SearchProgramsParam,
+    pub options: Option<RecordSettingsPatch>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UpdateReservationConditionParam {
+    pub condition_id: i32,
+    pub condition: Option<SearchProgramsParam>,
+    pub options: Option<RecordSettingsPatch>,
 }
 
 #[derive(Debug, Clone)]
@@ -401,6 +465,79 @@ impl EdcbMcpServer {
         let query = params.try_into_query()?;
         let client = self.client();
         to_call_tool_result(flows::get_timetable(&client, &query).await)
+    }
+
+    #[tool(
+        name = "list_reservation_conditions",
+        description = "List EDCB keyword auto reservation conditions"
+    )]
+    pub async fn list_reservation_conditions(&self) -> Result<CallToolResult, String> {
+        let client = self.client();
+        to_call_tool_result(flows::list_reservation_conditions(&client).await)
+    }
+
+    #[tool(
+        name = "get_reservation_condition",
+        description = "Get one EDCB keyword auto reservation condition by condition ID"
+    )]
+    pub async fn get_reservation_condition(
+        &self,
+        Parameters(params): Parameters<ReservationConditionIdParam>,
+    ) -> Result<CallToolResult, String> {
+        let client = self.client();
+        to_call_tool_result(flows::get_reservation_condition(&client, params.condition_id).await)
+    }
+
+    #[tool(
+        name = "create_reservation_condition",
+        description = "Create an EDCB keyword auto reservation condition"
+    )]
+    pub async fn create_reservation_condition(
+        &self,
+        Parameters(params): Parameters<CreateReservationConditionParam>,
+    ) -> Result<CallToolResult, String> {
+        let query = params.condition.try_into_query()?;
+        let options = params.options.unwrap_or_default();
+        let client = self.client();
+        to_call_tool_result(flows::create_reservation_condition(&client, &query, &options).await)
+    }
+
+    #[tool(
+        name = "update_reservation_condition",
+        description = "Update one EDCB keyword auto reservation condition"
+    )]
+    pub async fn update_reservation_condition(
+        &self,
+        Parameters(params): Parameters<UpdateReservationConditionParam>,
+    ) -> Result<CallToolResult, String> {
+        let query = params
+            .condition
+            .as_ref()
+            .map(SearchProgramsParam::try_into_query)
+            .transpose()?;
+        let options = params.options.unwrap_or_default();
+        let client = self.client();
+        to_call_tool_result(
+            flows::update_reservation_condition(
+                &client,
+                params.condition_id,
+                query.as_ref(),
+                &options,
+            )
+            .await,
+        )
+    }
+
+    #[tool(
+        name = "delete_reservation_condition",
+        description = "Delete one EDCB keyword auto reservation condition by condition ID after fetching it"
+    )]
+    pub async fn delete_reservation_condition(
+        &self,
+        Parameters(params): Parameters<ReservationConditionIdParam>,
+    ) -> Result<CallToolResult, String> {
+        let client = self.client();
+        to_call_tool_result(flows::delete_reservation_condition(&client, params.condition_id).await)
     }
 
     #[tool(

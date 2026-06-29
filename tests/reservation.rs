@@ -4,20 +4,25 @@ use std::time::Duration;
 
 use chrono::{Duration as ChronoDuration, Timelike};
 use edcb_tools::{
-    BroadcastType, EdcbClient, EventKey, PostRecordingMode, ProgramSearchQuery,
-    RecordSettingsPatch, RecordingAvailability, RecordingFolder, RecordingMode, SearchDateInfo,
-    SearchKeyInfo, ServiceKey, ServiceRecordingMode, TimeTableQuery,
+    BroadcastType, DuplicateTitleCheckScope, EdcbClient, EventKey, PostRecordingMode,
+    ProgramGenreRange, ProgramSearchQuery, RecordSettingsPatch, RecordingAvailability,
+    RecordingFolder, RecordingMode, SearchDateInfo, SearchKeyInfo, ServiceKey,
+    ServiceRecordingMode, TimeTableQuery,
     flows::{
-        apply_record_settings_patch, build_reservation_from_event, create_reservation_with_options,
-        delete_reservation, get_timetable, preview_reservation, program_search_query_to_search_key,
-        search_programs, update_reservation,
+        apply_record_settings_patch, build_reservation_from_event, create_reservation_condition,
+        create_reservation_with_options, delete_reservation, delete_reservation_condition,
+        get_timetable, preview_reservation, program_search_query_from_search_key,
+        program_search_query_to_search_key, search_programs, update_reservation,
+        update_reservation_condition,
     },
     test_support::{
-        encode_event_list_for_test, encode_reserve_for_test, encode_reserve_list_for_test,
-        encode_search_keys_for_test, encode_service_event_list_for_test,
-        encode_service_event_lists_for_test, encode_services_for_test, read_request_frame_for_test,
-        reserve_fixture_for_test, service_event_fixture_for_test,
+        encode_auto_add_list_for_test, encode_event_list_for_test, encode_reserve_for_test,
+        encode_reserve_list_for_test, encode_search_keys_for_test,
+        encode_service_event_list_for_test, encode_service_event_lists_for_test,
+        encode_services_for_test, read_request_frame_for_test, reserve_fixture_for_test,
+        service_event_fixture_for_test,
     },
+    types::AutoAddData,
 };
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -332,6 +337,22 @@ fn program_search_query_maps_to_search_key_info() {
         duration_min: Some(30),
         duration_max: Some(120),
         broadcast_type: BroadcastType::FreeOnly,
+        genre_ranges: vec![
+            ProgramGenreRange {
+                major: 0,
+                middle: 1,
+                user_nibble: None,
+            },
+            ProgramGenreRange {
+                major: 14,
+                middle: 0,
+                user_nibble: Some(0x1234),
+            },
+        ],
+        exclude_genre_ranges: true,
+        is_enabled: false,
+        duplicate_title_check_scope: DuplicateTitleCheckScope::AllChannels,
+        duplicate_title_check_period_days: 6,
     };
 
     let key = program_search_query_to_search_key(&query)
@@ -349,6 +370,71 @@ fn program_search_query_maps_to_search_key_info() {
     assert_eq!(key.chk_duration_min, 30);
     assert_eq!(key.chk_duration_max, 120);
     assert_eq!(key.free_ca_flag, 1);
+    assert_eq!(key.content_list.len(), 2);
+    assert_eq!(key.content_list[0].content_nibble, 0x0001);
+    assert_eq!(key.content_list[0].user_nibble, 0);
+    assert_eq!(key.content_list[1].content_nibble, 0x0e00);
+    assert_eq!(key.content_list[1].user_nibble, 0x1234);
+    assert!(key.not_contet_flag);
+    assert!(key.key_disabled);
+    assert!(key.chk_rec_end);
+    assert!(key.chk_rec_no_service);
+    assert_eq!(key.chk_rec_day, 6);
+}
+
+#[test]
+fn search_key_info_maps_back_to_program_search_query() {
+    let key = SearchKeyInfo {
+        and_key: "Program".to_string(),
+        not_key: "Sports".to_string(),
+        key_disabled: true,
+        content_list: vec![edcb_tools::types::ContentData {
+            content_nibble: 0x0e00,
+            user_nibble: 0x1234,
+        }],
+        service_list: vec![
+            ServiceKey {
+                onid: 1,
+                tsid: 2,
+                sid: 3,
+            }
+            .to_search_id(),
+        ],
+        not_contet_flag: true,
+        chk_rec_end: true,
+        chk_rec_day: 6,
+        chk_rec_no_service: false,
+        ..SearchKeyInfo::default()
+    };
+
+    let query = program_search_query_from_search_key(&key)
+        .expect("SearchKeyInfo should map back to a program search query");
+
+    assert_eq!(query.keyword, "Program");
+    assert_eq!(query.exclude_keyword, "Sports");
+    assert!(!query.is_enabled);
+    assert_eq!(
+        query.service_ranges,
+        Some(vec![ServiceKey {
+            onid: 1,
+            tsid: 2,
+            sid: 3,
+        }])
+    );
+    assert_eq!(
+        query.genre_ranges,
+        vec![ProgramGenreRange {
+            major: 14,
+            middle: 0,
+            user_nibble: Some(0x1234),
+        }]
+    );
+    assert!(query.exclude_genre_ranges);
+    assert_eq!(
+        query.duplicate_title_check_scope,
+        DuplicateTitleCheckScope::SameChannelOnly
+    );
+    assert_eq!(query.duplicate_title_check_period_days, 6);
 }
 
 #[test]
@@ -650,6 +736,204 @@ async fn search_programs_without_service_uses_enum_service_defaults() {
 }
 
 #[tokio::test]
+async fn auto_add_mutations_send_expected_protocol_shapes() {
+    let data = AutoAddData {
+        data_id: 55,
+        search_info: SearchKeyInfo {
+            and_key: "auto".to_string(),
+            chk_rec_end: true,
+            chk_rec_day: 6,
+            chk_rec_no_service: true,
+            ..SearchKeyInfo::default()
+        },
+        rec_setting: reserve_fixture_for_test().rec_setting,
+        add_count: 2,
+    };
+    let (addr, server) = spawn_command_sequence_server(vec![
+        (2132, Vec::new()),
+        (2134, Vec::new()),
+        (1033, Vec::new()),
+    ])
+    .await;
+    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
+    client.set_timeout(Duration::from_secs(1));
+
+    client
+        .add_auto_add(&data)
+        .await
+        .expect("AutoAdd add should succeed");
+    client
+        .change_auto_add(&data)
+        .await
+        .expect("AutoAdd change should succeed");
+    client
+        .delete_auto_add(data.data_id)
+        .await
+        .expect("AutoAdd delete should succeed");
+    let payloads = server
+        .await
+        .expect("mock EDCB server task should complete without panicking");
+
+    for payload in [&payloads[0], &payloads[1]] {
+        assert_eq!(&payload[0..2], &5_u16.to_le_bytes());
+        assert_eq!(read_i32_at(payload, 6), 1);
+        assert_eq!(read_i32_at(payload, 14), data.data_id);
+        let (chk_rec_end, chk_rec_day) = read_search_key_recording_check(payload, 18);
+        assert!(chk_rec_end);
+        assert_eq!(chk_rec_day, 40006);
+    }
+    assert_eq!(read_i32_at(&payloads[2], 0), 12);
+    assert_eq!(read_i32_at(&payloads[2], 4), 1);
+    assert_eq!(read_i32_at(&payloads[2], 8), data.data_id);
+}
+
+#[tokio::test]
+async fn create_reservation_condition_uses_default_record_settings_and_adds_auto_add() {
+    let query = ProgramSearchQuery {
+        keyword: "ニュース".to_string(),
+        service_ranges: Some(vec![ServiceKey {
+            onid: 1,
+            tsid: 2,
+            sid: 3,
+        }]),
+        genre_ranges: vec![ProgramGenreRange {
+            major: 0,
+            middle: 1,
+            user_nibble: None,
+        }],
+        ..ProgramSearchQuery::default()
+    };
+    let options = RecordSettingsPatch {
+        priority: Some(4),
+        ..RecordSettingsPatch::default()
+    };
+    let (addr, server) = spawn_two_command_server(
+        2012,
+        encode_reserve_for_test(&reserve_fixture_for_test()),
+        2132,
+        Vec::new(),
+    )
+    .await;
+    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
+    client.set_timeout(Duration::from_secs(1));
+
+    let condition = create_reservation_condition(&client, &query, &options)
+        .await
+        .expect("reservation condition create should add AutoAdd data");
+    let payloads = server
+        .await
+        .expect("mock EDCB server task should complete without panicking");
+
+    assert_eq!(condition.id, 0);
+    assert_eq!(condition.program_search_condition.keyword, "ニュース");
+    assert_eq!(condition.record_settings.priority, 4);
+    assert_eq!(&payloads[0][0..2], &5_u16.to_le_bytes());
+    assert_eq!(&payloads[0][2..6], &0x7fff_ffff_i32.to_le_bytes());
+    assert_eq!(&payloads[1][0..2], &5_u16.to_le_bytes());
+    assert_eq!(read_i32_at(&payloads[1], 6), 1);
+    assert_eq!(read_i32_at(&payloads[1], 14), 0);
+}
+
+#[tokio::test]
+async fn update_reservation_condition_merges_existing_auto_add_and_returns_updated_condition() {
+    let existing = AutoAddData {
+        data_id: 77,
+        search_info: program_search_query_to_search_key(&ProgramSearchQuery {
+            keyword: "old".to_string(),
+            ..ProgramSearchQuery::default()
+        })
+        .expect("test query should map to SearchKeyInfo"),
+        rec_setting: reserve_fixture_for_test().rec_setting,
+        add_count: 3,
+    };
+    let updated_query = ProgramSearchQuery {
+        keyword: "new".to_string(),
+        service_ranges: Some(vec![ServiceKey {
+            onid: 1,
+            tsid: 2,
+            sid: 3,
+        }]),
+        ..ProgramSearchQuery::default()
+    };
+    let mut updated = existing.clone();
+    updated.search_info =
+        program_search_query_to_search_key(&updated_query).expect("test query should map");
+    updated.rec_setting.priority = 5;
+
+    let (addr, server) = spawn_command_sequence_server(vec![
+        (
+            2131,
+            encode_auto_add_list_for_test(std::slice::from_ref(&existing)),
+        ),
+        (2134, Vec::new()),
+        (
+            2131,
+            encode_auto_add_list_for_test(std::slice::from_ref(&updated)),
+        ),
+    ])
+    .await;
+    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
+    client.set_timeout(Duration::from_secs(1));
+
+    let condition = update_reservation_condition(
+        &client,
+        existing.data_id,
+        Some(&updated_query),
+        &RecordSettingsPatch {
+            priority: Some(5),
+            ..RecordSettingsPatch::default()
+        },
+    )
+    .await
+    .expect("reservation condition update should change AutoAdd data");
+    let payloads = server
+        .await
+        .expect("mock EDCB server task should complete without panicking");
+
+    assert_eq!(condition.id, existing.data_id);
+    assert_eq!(condition.program_search_condition.keyword, "new");
+    assert_eq!(condition.record_settings.priority, 5);
+    assert_eq!(&payloads[1][0..2], &5_u16.to_le_bytes());
+    assert_eq!(read_i32_at(&payloads[1], 14), existing.data_id);
+}
+
+#[tokio::test]
+async fn delete_reservation_condition_fetches_existing_auto_add_then_deletes_by_id() {
+    let existing = AutoAddData {
+        data_id: 77,
+        search_info: program_search_query_to_search_key(&ProgramSearchQuery {
+            keyword: "old".to_string(),
+            ..ProgramSearchQuery::default()
+        })
+        .expect("test query should map to SearchKeyInfo"),
+        rec_setting: reserve_fixture_for_test().rec_setting,
+        add_count: 3,
+    };
+    let (addr, server) = spawn_two_command_server(
+        2131,
+        encode_auto_add_list_for_test(std::slice::from_ref(&existing)),
+        1033,
+        Vec::new(),
+    )
+    .await;
+    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
+    client.set_timeout(Duration::from_secs(1));
+
+    let condition = delete_reservation_condition(&client, existing.data_id)
+        .await
+        .expect("reservation condition delete should return deleted condition");
+    let payloads = server
+        .await
+        .expect("mock EDCB server task should complete without panicking");
+
+    assert_eq!(condition.id, existing.data_id);
+    assert_eq!(condition.reservation_count, 3);
+    assert_eq!(read_i32_at(&payloads[1], 0), 12);
+    assert_eq!(read_i32_at(&payloads[1], 4), 1);
+    assert_eq!(read_i32_at(&payloads[1], 8), existing.data_id);
+}
+
+#[tokio::test]
 async fn preview_reservation_looks_up_event_with_service_and_time_filter() {
     let (service, event) = service_event_fixture_for_test();
     let event_key = EventKey {
@@ -895,4 +1179,36 @@ fn read_i64_at(payload: &[u8], offset: usize) -> i64 {
             .try_into()
             .expect("test payload should contain a full i64 field"),
     )
+}
+
+fn read_u16_at(payload: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes(
+        payload[offset..offset + 2]
+            .try_into()
+            .expect("test payload should contain a full u16 field"),
+    )
+}
+
+fn read_search_key_recording_check(payload: &[u8], search_key_offset: usize) -> (bool, u16) {
+    let mut offset = search_key_offset + 4;
+    offset = string_end_at(payload, offset);
+    offset = string_end_at(payload, offset);
+    offset += 8;
+    for _ in 0..5 {
+        offset = vector_end_at(payload, offset);
+    }
+    offset += 4;
+    (payload[offset] != 0, read_u16_at(payload, offset + 1))
+}
+
+fn string_end_at(payload: &[u8], offset: usize) -> usize {
+    let size = usize::try_from(read_i32_at(payload, offset))
+        .expect("test string size should be non-negative");
+    offset + size
+}
+
+fn vector_end_at(payload: &[u8], offset: usize) -> usize {
+    let size = usize::try_from(read_i32_at(payload, offset))
+        .expect("test vector size should be non-negative");
+    offset + size
 }

@@ -142,6 +142,11 @@ Available commands:
 - `recorded get <info-id>`
 - `programs search [search options]`
 - `programs timetable [timetable options]`
+- `reservation-conditions`
+- `reservation-conditions get <condition-id>`
+- `reservation-conditions create [search options] [recording options] --yes`
+- `reservation-conditions update <condition-id> [search options] [recording options] --yes`
+- `reservation-conditions delete <condition-id> --yes`
 - `reserves get <reserve-id>`
 - `reserves preview --event <onid:tsid:sid:eid> [recording options]`
 - `reserves create --event <onid:tsid:sid:eid> [recording options] --yes`
@@ -169,6 +174,11 @@ recurring weekday/time-of-day ranges, not absolute datetimes. If no service is
 specified, the CLI first fetches EDCB's service list and searches those services.
 Use `programs timetable` when you want the program table for services/time
 windows instead of keyword search.
+`reservation-conditions` manages EDCB keyword auto reservations (`AutoAddData`)
+with the same search options and recording options. EDCB does not return the
+newly assigned AutoAdd ID from the add command, so create returns the condition
+payload that was sent with `id` set to `0`; list or get conditions afterwards to
+see assigned IDs.
 
 Program search options:
 
@@ -179,17 +189,25 @@ Program search options:
 - `--regex`
 - `--fuzzy`
 - `--service <onid:tsid:sid>` (repeatable)
+- `--genre <major:middle[:user_nibble]>` (repeatable)
+- `--exclude-genre-ranges`
 - `--date-range <start-dow:HH:MM-end-dow:HH:MM>` (repeatable, `0` is Sunday)
 - `--exclude-date-ranges`
 - `--duration-min <minutes>` and `--duration-max <minutes>`
 - `--free-ca <all|free|paid>`
+- `--search-enable` / `--search-disable`
+- `--duplicate-title-check <none|same-channel|all-channels>`
+- `--duplicate-title-check-days <days>`
 
 Examples:
 
 ```sh
 edcb programs search --keyword news --title-only
+edcb programs search --keyword news --genre 0:1
 edcb programs search --keyword news --date-range 1:19:00-1:23:00
 edcb programs search --keyword news --duration-min 30 --duration-max 120 --free-ca free
+edcb reservation-conditions create --keyword news --genre 0:1 --priority 4 --yes
+edcb reservation-conditions update 77 --keyword news --duplicate-title-check same-channel --yes
 ```
 
 Program timetable uses EDCB's `EnumPgInfoEx` semantics. It returns programs
@@ -251,6 +269,11 @@ Exposed MCP tools:
 - `get_recorded_info`
 - `search_programs`
 - `get_timetable`
+- `list_reservation_conditions`
+- `get_reservation_condition`
+- `create_reservation_condition`
+- `update_reservation_condition`
+- `delete_reservation_condition`
 - `preview_reservation`
 - `create_reservation`
 - `update_reservation`
@@ -284,6 +307,7 @@ deleted reservation data.
 
 ```json
 {
+  "is_enabled": true,
   "keyword": "news",
   "exclude_keyword": "sports",
   "is_title_only": true,
@@ -297,6 +321,14 @@ deleted reservation data.
       "service_id": 1024
     }
   ],
+  "genre_ranges": [
+    {
+      "major": 0,
+      "middle": 1,
+      "user_nibble": null
+    }
+  ],
+  "is_exclude_genre_ranges": false,
   "date_ranges": [
     {
       "start_day_of_week": 1,
@@ -310,9 +342,16 @@ deleted reservation data.
   "is_exclude_date_ranges": false,
   "duration_range_min": 30,
   "duration_range_max": 120,
-  "broadcast_type": "FreeOnly"
+  "broadcast_type": "FreeOnly",
+  "duplicate_title_check_scope": "None",
+  "duplicate_title_check_period_days": 6
 }
 ```
+
+`create_reservation_condition` accepts a required `condition` object with the
+same fields as `search_programs` and an optional `options` object with recording
+settings. `update_reservation_condition` accepts `condition_id`, optional
+`condition`, and optional `options`.
 
 `get_timetable` accepts service/time/channel filters and returns channels with
 programs, optional nested subchannels, and best-effort reservation metadata:

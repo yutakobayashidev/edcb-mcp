@@ -553,8 +553,40 @@ impl FromStr for BroadcastType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProgramGenreRange {
+    pub major: u8,
+    pub middle: u8,
+    pub user_nibble: Option<u16>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "PascalCase")]
+pub enum DuplicateTitleCheckScope {
+    #[default]
+    None,
+    SameChannelOnly,
+    AllChannels,
+}
+
+impl FromStr for DuplicateTitleCheckScope {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match normalize_option(value).as_str() {
+            "none" => Ok(Self::None),
+            "samechannel" | "samechannelonly" => Ok(Self::SameChannelOnly),
+            "allchannels" => Ok(Self::AllChannels),
+            _ => Err(format!(
+                "duplicate title check must be none, same-channel, or all-channels: {value}"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProgramSearchQuery {
+    pub is_enabled: bool,
     pub keyword: String,
     pub exclude_keyword: String,
     pub title_only: bool,
@@ -562,11 +594,39 @@ pub struct ProgramSearchQuery {
     pub regex: bool,
     pub fuzzy: bool,
     pub service_ranges: Option<Vec<ServiceKey>>,
+    pub genre_ranges: Vec<ProgramGenreRange>,
+    pub exclude_genre_ranges: bool,
     pub date_ranges: Vec<SearchDateInfo>,
     pub exclude_date_ranges: bool,
     pub duration_min: Option<u16>,
     pub duration_max: Option<u16>,
     pub broadcast_type: BroadcastType,
+    pub duplicate_title_check_scope: DuplicateTitleCheckScope,
+    pub duplicate_title_check_period_days: u16,
+}
+
+impl Default for ProgramSearchQuery {
+    fn default() -> Self {
+        Self {
+            is_enabled: true,
+            keyword: String::new(),
+            exclude_keyword: String::new(),
+            title_only: false,
+            case_sensitive: false,
+            regex: false,
+            fuzzy: false,
+            service_ranges: None,
+            genre_ranges: Vec::new(),
+            exclude_genre_ranges: false,
+            date_ranges: Vec::new(),
+            exclude_date_ranges: false,
+            duration_min: None,
+            duration_max: None,
+            broadcast_type: BroadcastType::All,
+            duplicate_title_check_scope: DuplicateTitleCheckScope::None,
+            duplicate_title_check_period_days: 6,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -575,6 +635,14 @@ pub struct AutoAddData {
     pub search_info: SearchKeyInfo,
     pub rec_setting: RecSettingData,
     pub add_count: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ReservationCondition {
+    pub id: i32,
+    pub reservation_count: i32,
+    pub program_search_condition: ProgramSearchQuery,
+    pub record_settings: RecSettingData,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
