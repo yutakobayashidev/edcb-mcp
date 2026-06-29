@@ -3,6 +3,7 @@ use std::fmt;
 use std::time::Duration;
 
 use chrono::{DateTime, FixedOffset};
+use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind, value_parser};
 use serde::Serialize;
 
 use crate::{
@@ -16,6 +17,27 @@ use crate::{
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const CLI_EXAMPLES: &str = "EXAMPLES:
+  edcb services
+  edcb --json services
+  edcb reserves --plain
+  edcb recorded list
+  edcb recorded get 1 --json
+  edcb programs search --keyword ニュース --title-only
+  edcb programs search --keyword ニュース --date-range 1:19:00-1:23:00
+  edcb programs search --keyword ニュース --duration-min 30 --duration-max 120 --free-ca free
+  edcb programs timetable --channel-type gr
+  edcb programs timetable --service 32736:32736:1024 --start-time 2026-06-29T19:00:00+09:00 --end-time 2026-06-29T23:00:00+09:00
+  edcb reservation-conditions --json
+  edcb reservation-conditions create --keyword ニュース --genre 0:1 --priority 4 --yes
+  edcb reservation-conditions update 77 --keyword ニュース --duplicate-title-check same-channel --yes
+  edcb reserves get 1 --json
+  edcb reserves preview --event 32736:32736:1024:4208
+  edcb reserves create --event 32736:32736:1024:4208 --priority 4 --yes
+  edcb reserves update 1 --disable --yes
+  edcb reserves delete 1 --yes
+  edcb plugins write
+  edcb --host 172.18.0.7 notify-status";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutputMode {
@@ -78,7 +100,7 @@ pub struct CliInvocation {
 #[allow(clippy::large_enum_variant)]
 pub enum CliAction {
     Run(CliInvocation),
-    Help,
+    Help(String),
     Version,
 }
 
@@ -142,524 +164,622 @@ where
         .map(|(key, value)| (key.as_ref().to_string(), value.as_ref().to_string()))
         .collect();
 
-    let mut invocation = CliInvocation {
-        host: env
-            .get("EDCB_HOST")
-            .cloned()
-            .unwrap_or_else(|| "127.0.0.1".to_string()),
-        port: env
-            .get("EDCB_PORT")
-            .map(|value| parse_port(value))
-            .transpose()?
-            .unwrap_or(4510),
-        timeout: Duration::from_secs(
-            env.get("EDCB_TIMEOUT_SECONDS")
-                .map(|value| parse_timeout(value))
-                .transpose()?
-                .unwrap_or(15),
-        ),
-        output: OutputMode::Human,
-        command: CliCommand::Services,
-    };
-
     let args: Vec<String> = args
         .into_iter()
         .map(|arg| arg.as_ref().to_string())
         .collect();
-    let mut positionals = Vec::new();
-    let mut index = 1;
-    while index < args.len() {
-        match args[index].as_str() {
-            "-h" | "--help" => return Ok(CliAction::Help),
-            "--version" => return Ok(CliAction::Version),
-            "--host" => {
-                index += 1;
-                invocation.host = args
-                    .get(index)
-                    .ok_or_else(|| CliError::invalid_usage("--host requires a value"))?
-                    .clone();
-            }
-            "--port" => {
-                index += 1;
-                invocation.port = parse_port(
-                    args.get(index)
-                        .ok_or_else(|| CliError::invalid_usage("--port requires a value"))?,
-                )?;
-            }
-            "--timeout-seconds" => {
-                index += 1;
-                invocation.timeout =
-                    Duration::from_secs(parse_timeout(args.get(index).ok_or_else(|| {
-                        CliError::invalid_usage("--timeout-seconds requires a value")
-                    })?)?);
-            }
-            "--json" => invocation.output = OutputMode::Json,
-            "--plain" => invocation.output = OutputMode::Plain,
-            "--keyword"
-            | "--exclude-keyword"
-            | "--service"
-            | "--date-range"
-            | "--duration-min"
-            | "--duration-max"
-            | "--free-ca"
-            | "--genre"
-            | "--duplicate-title-check"
-            | "--duplicate-title-check-days"
-            | "--event"
-            | "--priority"
-            | "--recording-mode"
-            | "--start-margin"
-            | "--end-margin"
-            | "--caption"
-            | "--data"
-            | "--post-recording"
-            | "--start-time"
-            | "--end-time"
-            | "--channel-type" => {
-                let key = args[index].clone();
-                index += 1;
-                let value = args
-                    .get(index)
-                    .ok_or_else(|| CliError::invalid_usage(format!("{key} requires a value")))?;
-                positionals.push(key);
-                positionals.push(value.clone());
-            }
-            "--title-only"
-            | "--case-sensitive"
-            | "--regex"
-            | "--fuzzy"
-            | "--exclude-genre-ranges"
-            | "--exclude-date-ranges"
-            | "--search-enable"
-            | "--search-disable"
-            | "--yes"
-            | "--enable"
-            | "--disable" => positionals.push(args[index].clone()),
-            value if value.starts_with('-') => {
-                return Err(CliError::invalid_usage(format!("unknown argument {value}")));
-            }
-            value => positionals.push(value.to_string()),
-        }
-        index += 1;
-    }
+    let raw = match RawCli::try_parse_from(args) {
+        Ok(raw) => raw,
+        Err(error) => match error.kind() {
+            ErrorKind::DisplayHelp => return Ok(CliAction::Help(error.to_string())),
+            ErrorKind::DisplayVersion => return Ok(CliAction::Version),
+            _ => return Err(CliError::invalid_usage(clap_error_message(error))),
+        },
+    };
 
-    invocation.command = parse_command(&positionals)?;
-    Ok(CliAction::Run(invocation))
+    Ok(CliAction::Run(raw.into_invocation(env)?))
 }
 
-fn parse_command(positionals: &[String]) -> Result<CliCommand, CliError> {
-    match positionals {
-        [] => Err(CliError::invalid_usage("missing command")),
-        [command] if command == "services" => Ok(CliCommand::Services),
-        [command] if command == "reserves" => Ok(CliCommand::Reserves),
-        [command] if command == "tuner-reserves" => Ok(CliCommand::TunerReserves),
-        [command] if command == "tuner-processes" => Ok(CliCommand::TunerProcesses),
-        [command] if command == "notify-status" => Ok(CliCommand::NotifyStatus),
-        [command, subcommand] if command == "recorded" && subcommand == "list" => {
-            Ok(CliCommand::RecordedList)
-        }
-        [command, subcommand, info_id] if command == "recorded" && subcommand == "get" => {
-            Ok(CliCommand::RecordedGet(info_id.parse().map_err(|_| {
-                CliError::invalid_usage(format!("info-id must be an integer: {info_id}"))
-            })?))
-        }
-        [command, subcommand, rest @ ..] if command == "programs" && subcommand == "search" => {
-            Ok(CliCommand::ProgramsSearch(parse_program_search(rest)?))
-        }
-        [command, subcommand, rest @ ..] if command == "programs" && subcommand == "timetable" => {
-            Ok(CliCommand::ProgramsTimetable(parse_program_timetable(
-                rest,
-            )?))
-        }
-        [command] if command == "reservation-conditions" => {
-            Ok(CliCommand::ReservationConditionsList)
-        }
-        [command, subcommand, condition_id]
-            if command == "reservation-conditions" && subcommand == "get" =>
-        {
-            Ok(CliCommand::ReservationConditionGet(parse_condition_id(
-                condition_id,
-            )?))
-        }
-        [command, subcommand, rest @ ..]
-            if command == "reservation-conditions" && subcommand == "create" =>
-        {
-            let (query, options) = parse_condition_search_and_options(rest)?;
-            if !rest.iter().any(|value| value == "--yes") {
-                return Err(CliError::invalid_usage(
-                    "reservation-conditions create requires --yes to confirm mutation",
-                ));
-            }
-            Ok(CliCommand::ReservationConditionCreate {
-                query: query.unwrap_or_default(),
-                options,
-            })
-        }
-        [command, subcommand, condition_id, rest @ ..]
-            if command == "reservation-conditions" && subcommand == "update" =>
-        {
-            let condition_id = parse_condition_id(condition_id)?;
-            let (query, options) = parse_condition_search_and_options(rest)?;
-            if !rest.iter().any(|value| value == "--yes") {
-                return Err(CliError::invalid_usage(
-                    "reservation-conditions update requires --yes to confirm mutation",
-                ));
-            }
-            Ok(CliCommand::ReservationConditionUpdate {
-                condition_id,
-                query,
-                options,
-            })
-        }
-        [command, subcommand, condition_id, rest @ ..]
-            if command == "reservation-conditions" && subcommand == "delete" =>
-        {
-            let condition_id = parse_condition_id(condition_id)?;
-            if let Some(value) = rest.iter().find(|value| value.as_str() != "--yes") {
-                return Err(CliError::invalid_usage(format!(
-                    "unknown reservation condition argument {value}"
-                )));
-            }
-            if !rest.iter().any(|value| value == "--yes") {
-                return Err(CliError::invalid_usage(
-                    "reservation-conditions delete requires --yes to confirm mutation",
-                ));
-            }
-            Ok(CliCommand::ReservationConditionDelete(condition_id))
-        }
-        [command, subcommand, rest @ ..] if command == "reserves" && subcommand == "preview" => {
-            let (event_key, options) = parse_event_and_options(rest)?;
-            Ok(CliCommand::ReservePreview { event_key, options })
-        }
-        [command, subcommand, reserve_id] if command == "reserves" && subcommand == "get" => {
-            Ok(CliCommand::ReserveGet(parse_reserve_id(reserve_id)?))
-        }
-        [command, subcommand, rest @ ..] if command == "reserves" && subcommand == "create" => {
-            let (event_key, options) = parse_event_and_options(rest)?;
-            if !rest.iter().any(|value| value == "--yes") {
-                return Err(CliError::invalid_usage(
-                    "reserves create requires --yes to confirm mutation",
-                ));
-            }
-            Ok(CliCommand::ReserveCreate { event_key, options })
-        }
-        [command, subcommand, reserve_id, rest @ ..]
-            if command == "reserves" && subcommand == "update" =>
-        {
-            let reserve_id = parse_reserve_id(reserve_id)?;
-            let options = parse_record_settings_options(rest)?;
-            if !rest.iter().any(|value| value == "--yes") {
-                return Err(CliError::invalid_usage(
-                    "reserves update requires --yes to confirm mutation",
-                ));
-            }
-            Ok(CliCommand::ReserveUpdate {
-                reserve_id,
-                options,
-            })
-        }
-        [command, subcommand, reserve_id, rest @ ..]
-            if command == "reserves" && subcommand == "delete" =>
-        {
-            let reserve_id = parse_reserve_id(reserve_id)?;
-            if let Some(value) = rest.iter().find(|value| value.as_str() != "--yes") {
-                return Err(CliError::invalid_usage(format!(
-                    "unknown reservation argument {value}"
-                )));
-            }
-            if !rest.iter().any(|value| value == "--yes") {
-                return Err(CliError::invalid_usage(
-                    "reserves delete requires --yes to confirm mutation",
-                ));
-            }
-            Ok(CliCommand::ReserveDelete(reserve_id))
-        }
-        [command, kind] if command == "plugins" => {
-            Ok(CliCommand::Plugins(parse_plugin_kind(kind)?))
-        }
-        [command, ..] => Err(CliError::invalid_usage(format!(
-            "unknown or incomplete command: {command}"
-        ))),
-    }
+fn clap_error_message(error: clap::Error) -> String {
+    let message = error.to_string();
+    message
+        .strip_prefix("error: ")
+        .unwrap_or(&message)
+        .to_string()
 }
 
-fn parse_program_search(args: &[String]) -> Result<ProgramSearchQuery, CliError> {
-    let mut query = ProgramSearchQuery::default();
-    let mut index = 0;
-    while index < args.len() {
-        if !is_program_search_option(args[index].as_str()) {
-            return Err(CliError::invalid_usage(format!(
-                "unknown programs search argument {}",
-                args[index]
-            )));
-        }
-        parse_program_search_option(args, &mut index, &mut query)?;
-        index += 1;
-    }
-    Ok(query)
+#[derive(Debug, Parser)]
+#[command(
+    name = "edcb",
+    version = VERSION,
+    about = "EDCB CtrlCmd command line interface",
+    after_long_help = CLI_EXAMPLES
+)]
+struct RawCli {
+    #[arg(
+        long,
+        global = true,
+        value_name = "host",
+        help = "EDCB host (env: EDCB_HOST, default: 127.0.0.1)"
+    )]
+    host: Option<String>,
+    #[arg(
+        long,
+        global = true,
+        value_name = "port",
+        help = "EDCB CtrlCmd port (env: EDCB_PORT, default: 4510)"
+    )]
+    port: Option<u16>,
+    #[arg(
+        long,
+        global = true,
+        value_name = "n",
+        value_parser = value_parser!(u64).range(1..),
+        help = "Request timeout in seconds (env: EDCB_TIMEOUT_SECONDS, default: 15)"
+    )]
+    timeout_seconds: Option<u64>,
+    #[arg(
+        long,
+        global = true,
+        conflicts_with = "plain",
+        help = "Print pretty JSON"
+    )]
+    json: bool,
+    #[arg(
+        long,
+        global = true,
+        conflicts_with = "json",
+        help = "Print stable line-based output"
+    )]
+    plain: bool,
+    #[command(subcommand)]
+    command: RawCommand,
 }
 
-fn parse_condition_search_and_options(
-    args: &[String],
-) -> Result<(Option<ProgramSearchQuery>, RecordSettingsPatch), CliError> {
-    let mut query = ProgramSearchQuery::default();
-    let mut has_search_options = false;
-    let mut options = RecordSettingsPatch::default();
-    let mut index = 0;
-    while index < args.len() {
-        if is_program_search_option(args[index].as_str()) {
-            has_search_options = true;
-            parse_program_search_option(args, &mut index, &mut query)?;
+impl RawCli {
+    fn into_invocation(self, env: BTreeMap<String, String>) -> Result<CliInvocation, CliError> {
+        let host = self
+            .host
+            .or_else(|| env.get("EDCB_HOST").cloned())
+            .unwrap_or_else(|| "127.0.0.1".to_string());
+        let port = match self.port {
+            Some(port) => port,
+            None => env
+                .get("EDCB_PORT")
+                .map(|value| parse_port(value))
+                .transpose()?
+                .unwrap_or(4510),
+        };
+        let timeout_seconds = match self.timeout_seconds {
+            Some(timeout_seconds) => timeout_seconds,
+            None => env
+                .get("EDCB_TIMEOUT_SECONDS")
+                .map(|value| parse_timeout(value))
+                .transpose()?
+                .unwrap_or(15),
+        };
+        let timeout = Duration::from_secs(timeout_seconds);
+        let output = if self.json {
+            OutputMode::Json
+        } else if self.plain {
+            OutputMode::Plain
         } else {
-            parse_record_settings_option(args, &mut index, &mut options)?;
-        }
-        index += 1;
+            OutputMode::Human
+        };
+
+        Ok(CliInvocation {
+            host,
+            port,
+            timeout,
+            output,
+            command: self.command.try_into_command()?,
+        })
     }
-    Ok((has_search_options.then_some(query), options))
 }
 
-fn is_program_search_option(value: &str) -> bool {
-    matches!(
-        value,
-        "--keyword"
-            | "--exclude-keyword"
-            | "--title-only"
-            | "--case-sensitive"
-            | "--regex"
-            | "--fuzzy"
-            | "--service"
-            | "--genre"
-            | "--exclude-genre-ranges"
-            | "--date-range"
-            | "--exclude-date-ranges"
-            | "--duration-min"
-            | "--duration-max"
-            | "--free-ca"
-            | "--search-enable"
-            | "--search-disable"
-            | "--duplicate-title-check"
-            | "--duplicate-title-check-days"
-    )
+#[derive(Debug, Subcommand)]
+#[command(rename_all = "kebab-case")]
+enum RawCommand {
+    #[command(about = "List services")]
+    Services,
+    #[command(about = "List or manage reservations")]
+    Reserves(ReservesArgs),
+    #[command(about = "List or inspect recorded items")]
+    Recorded(RecordedArgs),
+    #[command(about = "Search programs or retrieve timetable data")]
+    Programs(ProgramsArgs),
+    #[command(about = "List or manage keyword auto reservation conditions")]
+    ReservationConditions(ReservationConditionsArgs),
+    #[command(about = "List tuner reservation state")]
+    TunerReserves,
+    #[command(about = "List tuner process state")]
+    TunerProcesses,
+    #[command(about = "List EDCB plugins")]
+    Plugins {
+        #[arg(
+            value_name = "write|rec_name",
+            value_parser = ["write", "rec_name"],
+            help = "Plugin kind"
+        )]
+        kind: String,
+    },
+    #[command(about = "Get EDCB notify server status")]
+    NotifyStatus,
 }
 
-fn parse_program_search_option(
-    args: &[String],
-    index: &mut usize,
-    query: &mut ProgramSearchQuery,
-) -> Result<(), CliError> {
-    match args[*index].as_str() {
-        "--keyword" => {
-            *index += 1;
-            query.keyword = args
-                .get(*index)
-                .ok_or_else(|| CliError::invalid_usage("--keyword requires a value"))?
-                .clone();
-        }
-        "--exclude-keyword" => {
-            *index += 1;
-            query.exclude_keyword = args
-                .get(*index)
-                .ok_or_else(|| CliError::invalid_usage("--exclude-keyword requires a value"))?
-                .clone();
-        }
-        "--title-only" => query.title_only = true,
-        "--case-sensitive" => query.case_sensitive = true,
-        "--regex" => query.regex = true,
-        "--fuzzy" => query.fuzzy = true,
-        "--service" => {
-            *index += 1;
-            query
-                .service_ranges
-                .get_or_insert_with(Vec::new)
-                .push(parse_service_key(args.get(*index).ok_or_else(|| {
-                    CliError::invalid_usage("--service requires onid:tsid:sid")
-                })?)?);
-        }
-        "--genre" => {
-            *index += 1;
-            query
-                .genre_ranges
-                .push(parse_program_genre_range(args.get(*index).ok_or_else(
-                    || CliError::invalid_usage("--genre requires major:middle[:user_nibble]"),
-                )?)?);
-        }
-        "--exclude-genre-ranges" => query.exclude_genre_ranges = true,
-        "--date-range" => {
-            *index += 1;
-            query
-                .date_ranges
-                .push(parse_search_date_range(args.get(*index).ok_or_else(
-                    || {
-                        CliError::invalid_usage(
-                            "--date-range requires start-dow:HH:MM-end-dow:HH:MM",
-                        )
-                    },
-                )?)?);
-        }
-        "--exclude-date-ranges" => query.exclude_date_ranges = true,
-        "--duration-min" => {
-            *index += 1;
-            query.duration_min = Some(parse_u16_arg(args.get(*index), "--duration-min")?);
-        }
-        "--duration-max" => {
-            *index += 1;
-            query.duration_max = Some(parse_u16_arg(args.get(*index), "--duration-max")?);
-        }
-        "--free-ca" => {
-            *index += 1;
-            query.broadcast_type = parse_broadcast_type_arg(args.get(*index), "--free-ca")?;
-        }
-        "--search-enable" => query.is_enabled = true,
-        "--search-disable" => query.is_enabled = false,
-        "--duplicate-title-check" => {
-            *index += 1;
-            query.duplicate_title_check_scope =
-                parse_duplicate_title_check_arg(args.get(*index), "--duplicate-title-check")?;
-        }
-        "--duplicate-title-check-days" => {
-            *index += 1;
-            query.duplicate_title_check_period_days =
-                parse_u16_arg(args.get(*index), "--duplicate-title-check-days")?;
-        }
-        value => {
-            return Err(CliError::invalid_usage(format!(
-                "unknown programs search argument {value}"
-            )));
+impl RawCommand {
+    fn try_into_command(self) -> Result<CliCommand, CliError> {
+        match self {
+            Self::Services => Ok(CliCommand::Services),
+            Self::Reserves(args) => args.try_into_command(),
+            Self::Recorded(args) => args.try_into_command(),
+            Self::Programs(args) => args.try_into_command(),
+            Self::ReservationConditions(args) => args.try_into_command(),
+            Self::TunerReserves => Ok(CliCommand::TunerReserves),
+            Self::TunerProcesses => Ok(CliCommand::TunerProcesses),
+            Self::Plugins { kind } => Ok(CliCommand::Plugins(parse_plugin_kind(&kind)?)),
+            Self::NotifyStatus => Ok(CliCommand::NotifyStatus),
         }
     }
-    Ok(())
 }
 
-fn parse_program_timetable(args: &[String]) -> Result<TimeTableQuery, CliError> {
-    let mut query = TimeTableQuery::default();
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--service" => {
-                index += 1;
-                query
-                    .services
-                    .push(parse_service_key(args.get(index).ok_or_else(|| {
-                        CliError::invalid_usage("--service requires onid:tsid:sid")
-                    })?)?);
-            }
-            "--start-time" => {
-                index += 1;
-                query.start_time = Some(parse_datetime_arg(args.get(index), "--start-time")?);
-            }
-            "--end-time" => {
-                index += 1;
-                query.end_time = Some(parse_datetime_arg(args.get(index), "--end-time")?);
-            }
-            "--channel-type" => {
-                index += 1;
-                query.channel_type =
-                    Some(parse_channel_type_arg(args.get(index), "--channel-type")?);
-            }
-            value => {
-                return Err(CliError::invalid_usage(format!(
-                    "unknown programs timetable argument {value}"
-                )));
-            }
-        }
-        index += 1;
-    }
-    Ok(query)
+#[derive(Debug, Args)]
+struct RecordedArgs {
+    #[command(subcommand)]
+    command: RecordedCommand,
 }
 
-fn parse_event_and_options(args: &[String]) -> Result<(EventKey, RecordSettingsPatch), CliError> {
-    let mut event = None;
-    let mut options = RecordSettingsPatch::default();
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--event" => {
-                index += 1;
-                event = Some(parse_event_key(args.get(index).ok_or_else(|| {
-                    CliError::invalid_usage("--event requires onid:tsid:sid:eid")
-                })?)?);
-            }
-            _ => parse_record_settings_option(args, &mut index, &mut options)?,
-        }
-        index += 1;
-    }
-    Ok((
-        event.ok_or_else(|| CliError::invalid_usage("reservation command requires --event"))?,
-        options,
-    ))
-}
-
-fn parse_record_settings_options(args: &[String]) -> Result<RecordSettingsPatch, CliError> {
-    let mut options = RecordSettingsPatch::default();
-    let mut index = 0;
-    while index < args.len() {
-        parse_record_settings_option(args, &mut index, &mut options)?;
-        index += 1;
-    }
-    Ok(options)
-}
-
-fn parse_record_settings_option(
-    args: &[String],
-    index: &mut usize,
-    options: &mut RecordSettingsPatch,
-) -> Result<(), CliError> {
-    match args[*index].as_str() {
-        "--yes" => {}
-        "--priority" => {
-            *index += 1;
-            options.priority = Some(parse_u8_arg(args.get(*index), "--priority")?);
-        }
-        "--enable" => options.is_enabled = Some(true),
-        "--disable" => options.is_enabled = Some(false),
-        "--recording-mode" => {
-            *index += 1;
-            options.recording_mode = Some(parse_recording_mode_arg(
-                args.get(*index),
-                "--recording-mode",
-            )?);
-        }
-        "--start-margin" => {
-            *index += 1;
-            options.recording_start_margin =
-                Some(parse_i32_arg(args.get(*index), "--start-margin")?);
-        }
-        "--end-margin" => {
-            *index += 1;
-            options.recording_end_margin = Some(parse_i32_arg(args.get(*index), "--end-margin")?);
-        }
-        "--caption" => {
-            *index += 1;
-            options.caption_recording_mode = Some(parse_service_recording_mode_arg(
-                args.get(*index),
-                "--caption",
-            )?);
-        }
-        "--data" => {
-            *index += 1;
-            options.data_broadcasting_recording_mode = Some(parse_service_recording_mode_arg(
-                args.get(*index),
-                "--data",
-            )?);
-        }
-        "--post-recording" => {
-            *index += 1;
-            options.post_recording_mode = Some(parse_post_recording_mode_arg(
-                args.get(*index),
-                "--post-recording",
-            )?);
-        }
-        value => {
-            return Err(CliError::invalid_usage(format!(
-                "unknown reservation argument {value}"
-            )));
+impl RecordedArgs {
+    fn try_into_command(self) -> Result<CliCommand, CliError> {
+        match self.command {
+            RecordedCommand::List => Ok(CliCommand::RecordedList),
+            RecordedCommand::Get { info_id } => Ok(CliCommand::RecordedGet(info_id)),
         }
     }
-    Ok(())
 }
 
-fn parse_service_key(value: &str) -> Result<ServiceKey, CliError> {
-    value.parse().map_err(CliError::invalid_usage)
+#[derive(Debug, Subcommand)]
+#[command(rename_all = "kebab-case")]
+enum RecordedCommand {
+    List,
+    Get {
+        #[arg(value_name = "info-id")]
+        info_id: i32,
+    },
+}
+
+#[derive(Debug, Args)]
+struct ProgramsArgs {
+    #[command(subcommand)]
+    command: ProgramsCommand,
+}
+
+impl ProgramsArgs {
+    fn try_into_command(self) -> Result<CliCommand, CliError> {
+        match self.command {
+            ProgramsCommand::Search(search) => Ok(CliCommand::ProgramsSearch(search.into_query())),
+            ProgramsCommand::Timetable(timetable) => {
+                Ok(CliCommand::ProgramsTimetable(timetable.into_query()))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Subcommand)]
+#[command(rename_all = "kebab-case")]
+enum ProgramsCommand {
+    Search(SearchOptions),
+    Timetable(TimetableOptions),
+}
+
+#[derive(Debug, Args)]
+struct ReservationConditionsArgs {
+    #[command(subcommand)]
+    command: Option<ReservationConditionsCommand>,
+}
+
+impl ReservationConditionsArgs {
+    fn try_into_command(self) -> Result<CliCommand, CliError> {
+        match self.command {
+            None => Ok(CliCommand::ReservationConditionsList),
+            Some(ReservationConditionsCommand::Get { condition_id }) => {
+                Ok(CliCommand::ReservationConditionGet(condition_id))
+            }
+            Some(ReservationConditionsCommand::Create {
+                search,
+                recording,
+                yes,
+            }) => {
+                if !yes {
+                    return Err(CliError::invalid_usage(
+                        "reservation-conditions create requires --yes to confirm mutation",
+                    ));
+                }
+                Ok(CliCommand::ReservationConditionCreate {
+                    query: search.into_query(),
+                    options: recording.into_patch(),
+                })
+            }
+            Some(ReservationConditionsCommand::Update {
+                condition_id,
+                search,
+                recording,
+                yes,
+            }) => {
+                if !yes {
+                    return Err(CliError::invalid_usage(
+                        "reservation-conditions update requires --yes to confirm mutation",
+                    ));
+                }
+                let query = search.has_any().then(|| search.into_query());
+                Ok(CliCommand::ReservationConditionUpdate {
+                    condition_id,
+                    query,
+                    options: recording.into_patch(),
+                })
+            }
+            Some(ReservationConditionsCommand::Delete { condition_id, yes }) => {
+                if !yes {
+                    return Err(CliError::invalid_usage(
+                        "reservation-conditions delete requires --yes to confirm mutation",
+                    ));
+                }
+                Ok(CliCommand::ReservationConditionDelete(condition_id))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Subcommand)]
+#[command(rename_all = "kebab-case")]
+enum ReservationConditionsCommand {
+    Get {
+        #[arg(value_name = "condition-id")]
+        condition_id: i32,
+    },
+    Create {
+        #[command(flatten)]
+        search: SearchOptions,
+        #[command(flatten)]
+        recording: RecordingOptions,
+        #[arg(long, help = "Confirm the mutation")]
+        yes: bool,
+    },
+    Update {
+        #[arg(value_name = "condition-id")]
+        condition_id: i32,
+        #[command(flatten)]
+        search: SearchOptions,
+        #[command(flatten)]
+        recording: RecordingOptions,
+        #[arg(long, help = "Confirm the mutation")]
+        yes: bool,
+    },
+    Delete {
+        #[arg(value_name = "condition-id")]
+        condition_id: i32,
+        #[arg(long, help = "Confirm the mutation")]
+        yes: bool,
+    },
+}
+
+#[derive(Debug, Args)]
+struct ReservesArgs {
+    #[command(subcommand)]
+    command: Option<ReservesCommand>,
+}
+
+impl ReservesArgs {
+    fn try_into_command(self) -> Result<CliCommand, CliError> {
+        match self.command {
+            None => Ok(CliCommand::Reserves),
+            Some(ReservesCommand::Get { reserve_id }) => Ok(CliCommand::ReserveGet(reserve_id)),
+            Some(ReservesCommand::Preview { event, recording }) => Ok(CliCommand::ReservePreview {
+                event_key: event,
+                options: recording.into_patch(),
+            }),
+            Some(ReservesCommand::Create {
+                event,
+                recording,
+                yes,
+            }) => {
+                if !yes {
+                    return Err(CliError::invalid_usage(
+                        "reserves create requires --yes to confirm mutation",
+                    ));
+                }
+                Ok(CliCommand::ReserveCreate {
+                    event_key: event,
+                    options: recording.into_patch(),
+                })
+            }
+            Some(ReservesCommand::Update {
+                reserve_id,
+                recording,
+                yes,
+            }) => {
+                if !yes {
+                    return Err(CliError::invalid_usage(
+                        "reserves update requires --yes to confirm mutation",
+                    ));
+                }
+                Ok(CliCommand::ReserveUpdate {
+                    reserve_id,
+                    options: recording.into_patch(),
+                })
+            }
+            Some(ReservesCommand::Delete { reserve_id, yes }) => {
+                if !yes {
+                    return Err(CliError::invalid_usage(
+                        "reserves delete requires --yes to confirm mutation",
+                    ));
+                }
+                Ok(CliCommand::ReserveDelete(reserve_id))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Subcommand)]
+#[command(rename_all = "kebab-case")]
+enum ReservesCommand {
+    Get {
+        #[arg(value_name = "reserve-id")]
+        reserve_id: i32,
+    },
+    Preview {
+        #[arg(long, value_name = "onid:tsid:sid:eid", help = "Event key to reserve")]
+        event: EventKey,
+        #[command(flatten)]
+        recording: RecordingOptions,
+    },
+    Create {
+        #[arg(long, value_name = "onid:tsid:sid:eid", help = "Event key to reserve")]
+        event: EventKey,
+        #[command(flatten)]
+        recording: RecordingOptions,
+        #[arg(long, help = "Confirm the mutation")]
+        yes: bool,
+    },
+    Update {
+        #[arg(value_name = "reserve-id")]
+        reserve_id: i32,
+        #[command(flatten)]
+        recording: RecordingOptions,
+        #[arg(long, help = "Confirm the mutation")]
+        yes: bool,
+    },
+    Delete {
+        #[arg(value_name = "reserve-id")]
+        reserve_id: i32,
+        #[arg(long, help = "Confirm the mutation")]
+        yes: bool,
+    },
+}
+
+#[derive(Debug, Clone, Default, Args)]
+#[command(next_help_heading = "Search Options")]
+struct SearchOptions {
+    #[arg(long, help = "Keyword to search")]
+    keyword: Option<String>,
+    #[arg(long, help = "Keyword to exclude")]
+    exclude_keyword: Option<String>,
+    #[arg(long, help = "Match only program titles")]
+    title_only: bool,
+    #[arg(long, help = "Use case-sensitive keyword matching")]
+    case_sensitive: bool,
+    #[arg(long, help = "Treat keyword as a regular expression")]
+    regex: bool,
+    #[arg(long, help = "Enable EDCB fuzzy search")]
+    fuzzy: bool,
+    #[arg(
+        long,
+        value_name = "onid:tsid:sid",
+        help = "Service key to search; repeatable"
+    )]
+    service: Vec<ServiceKey>,
+    #[arg(
+        long,
+        value_name = "major:middle[:user_nibble]",
+        value_parser = parse_program_genre_range,
+        help = "EDCB genre range; repeatable"
+    )]
+    genre: Vec<ProgramGenreRange>,
+    #[arg(long, help = "Exclude matching genre ranges")]
+    exclude_genre_ranges: bool,
+    #[arg(
+        long,
+        value_name = "start-dow:HH:MM-end-dow:HH:MM",
+        value_parser = parse_search_date_range,
+        help = "EDCB recurring weekday/time range; repeatable"
+    )]
+    date_range: Vec<SearchDateInfo>,
+    #[arg(long, help = "Exclude matching date ranges")]
+    exclude_date_ranges: bool,
+    #[arg(long, value_name = "minutes", help = "Minimum duration in minutes")]
+    duration_min: Option<u16>,
+    #[arg(long, value_name = "minutes", help = "Maximum duration in minutes")]
+    duration_max: Option<u16>,
+    #[arg(long, value_name = "all|free|paid", help = "Broadcast fee filter")]
+    free_ca: Option<BroadcastType>,
+    #[arg(
+        long,
+        conflicts_with = "search_disable",
+        help = "Enable this condition"
+    )]
+    search_enable: bool,
+    #[arg(
+        long,
+        conflicts_with = "search_enable",
+        help = "Disable this condition"
+    )]
+    search_disable: bool,
+    #[arg(
+        long,
+        value_name = "none|same-channel|all-channels",
+        help = "Duplicate title check scope"
+    )]
+    duplicate_title_check: Option<DuplicateTitleCheckScope>,
+    #[arg(
+        long,
+        value_name = "days",
+        help = "Duplicate title check period in days"
+    )]
+    duplicate_title_check_days: Option<u16>,
+}
+
+impl SearchOptions {
+    fn has_any(&self) -> bool {
+        self.keyword.is_some()
+            || self.exclude_keyword.is_some()
+            || self.title_only
+            || self.case_sensitive
+            || self.regex
+            || self.fuzzy
+            || !self.service.is_empty()
+            || !self.genre.is_empty()
+            || self.exclude_genre_ranges
+            || !self.date_range.is_empty()
+            || self.exclude_date_ranges
+            || self.duration_min.is_some()
+            || self.duration_max.is_some()
+            || self.free_ca.is_some()
+            || self.search_enable
+            || self.search_disable
+            || self.duplicate_title_check.is_some()
+            || self.duplicate_title_check_days.is_some()
+    }
+
+    fn into_query(self) -> ProgramSearchQuery {
+        let mut query = ProgramSearchQuery {
+            keyword: self.keyword.unwrap_or_default(),
+            exclude_keyword: self.exclude_keyword.unwrap_or_default(),
+            title_only: self.title_only,
+            case_sensitive: self.case_sensitive,
+            regex: self.regex,
+            fuzzy: self.fuzzy,
+            exclude_genre_ranges: self.exclude_genre_ranges,
+            exclude_date_ranges: self.exclude_date_ranges,
+            ..ProgramSearchQuery::default()
+        };
+        if !self.service.is_empty() {
+            query.service_ranges = Some(self.service);
+        }
+        query.genre_ranges = self.genre;
+        query.date_ranges = self.date_range;
+        query.duration_min = self.duration_min;
+        query.duration_max = self.duration_max;
+        if let Some(value) = self.free_ca {
+            query.broadcast_type = value;
+        }
+        if self.search_disable {
+            query.is_enabled = false;
+        } else if self.search_enable {
+            query.is_enabled = true;
+        }
+        if let Some(value) = self.duplicate_title_check {
+            query.duplicate_title_check_scope = value;
+        }
+        if let Some(value) = self.duplicate_title_check_days {
+            query.duplicate_title_check_period_days = value;
+        }
+        query
+    }
+}
+
+#[derive(Debug, Clone, Default, Args)]
+#[command(next_help_heading = "Timetable Options")]
+struct TimetableOptions {
+    #[arg(
+        long,
+        value_name = "onid:tsid:sid",
+        help = "Service key to include; repeatable"
+    )]
+    service: Vec<ServiceKey>,
+    #[arg(
+        long,
+        value_name = "RFC3339 datetime",
+        value_parser = parse_datetime_value,
+        help = "Start time filter"
+    )]
+    start_time: Option<DateTime<FixedOffset>>,
+    #[arg(
+        long,
+        value_name = "RFC3339 datetime",
+        value_parser = parse_datetime_value,
+        help = "End time filter"
+    )]
+    end_time: Option<DateTime<FixedOffset>>,
+    #[arg(
+        long,
+        value_name = "gr|bs|cs|catv|sky|bs4k",
+        help = "Channel type filter"
+    )]
+    channel_type: Option<ChannelType>,
+}
+
+impl TimetableOptions {
+    fn into_query(self) -> TimeTableQuery {
+        TimeTableQuery {
+            start_time: self.start_time,
+            end_time: self.end_time,
+            channel_type: self.channel_type,
+            services: self.service,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Args)]
+#[command(next_help_heading = "Recording Options")]
+struct RecordingOptions {
+    #[arg(long, value_name = "1-5", help = "Reservation priority")]
+    priority: Option<u8>,
+    #[arg(long, conflicts_with = "disable", help = "Enable the reservation")]
+    enable: bool,
+    #[arg(long, conflicts_with = "enable", help = "Disable the reservation")]
+    disable: bool,
+    #[arg(long, value_name = "mode", help = "Recording mode")]
+    recording_mode: Option<RecordingMode>,
+    #[arg(long, value_name = "seconds", help = "Recording start margin")]
+    start_margin: Option<i32>,
+    #[arg(long, value_name = "seconds", help = "Recording end margin")]
+    end_margin: Option<i32>,
+    #[arg(
+        long,
+        value_name = "default|enable|disable",
+        help = "Caption recording mode"
+    )]
+    caption: Option<ServiceRecordingMode>,
+    #[arg(
+        long,
+        value_name = "default|enable|disable",
+        help = "Data broadcasting recording mode"
+    )]
+    data: Option<ServiceRecordingMode>,
+    #[arg(long, value_name = "mode", help = "Post-recording action")]
+    post_recording: Option<PostRecordingMode>,
+}
+
+impl RecordingOptions {
+    fn into_patch(self) -> RecordSettingsPatch {
+        RecordSettingsPatch {
+            is_enabled: if self.disable {
+                Some(false)
+            } else if self.enable {
+                Some(true)
+            } else {
+                None
+            },
+            priority: self.priority,
+            recording_mode: self.recording_mode,
+            recording_start_margin: self.start_margin,
+            recording_end_margin: self.end_margin,
+            caption_recording_mode: self.caption,
+            data_broadcasting_recording_mode: self.data,
+            post_recording_mode: self.post_recording,
+            ..RecordSettingsPatch::default()
+        }
+    }
 }
 
 fn parse_program_genre_range(value: &str) -> Result<ProgramGenreRange, CliError> {
@@ -687,77 +807,9 @@ fn parse_program_genre_range(value: &str) -> Result<ProgramGenreRange, CliError>
     })
 }
 
-fn parse_event_key(value: &str) -> Result<EventKey, CliError> {
-    value.parse().map_err(CliError::invalid_usage)
-}
-
-fn parse_reserve_id(value: &str) -> Result<i32, CliError> {
-    value
-        .parse()
-        .map_err(|_| CliError::invalid_usage(format!("reserve-id must be an integer: {value}")))
-}
-
-fn parse_condition_id(value: &str) -> Result<i32, CliError> {
-    value.parse().map_err(|_| {
-        CliError::invalid_usage(format!(
-            "reservation-condition-id must be an integer: {value}"
-        ))
-    })
-}
-
-fn parse_u8_arg(value: Option<&String>, name: &str) -> Result<u8, CliError> {
-    value
-        .ok_or_else(|| CliError::invalid_usage(format!("{name} requires a value")))?
-        .parse()
-        .map_err(|_| CliError::invalid_usage(format!("{name} must be a number")))
-}
-
-fn parse_u16_arg(value: Option<&String>, name: &str) -> Result<u16, CliError> {
-    value
-        .ok_or_else(|| CliError::invalid_usage(format!("{name} requires a value")))?
-        .parse()
-        .map_err(|_| CliError::invalid_usage(format!("{name} must be a number")))
-}
-
-fn parse_i32_arg(value: Option<&String>, name: &str) -> Result<i32, CliError> {
-    value
-        .ok_or_else(|| CliError::invalid_usage(format!("{name} requires a value")))?
-        .parse()
-        .map_err(|_| CliError::invalid_usage(format!("{name} must be an integer")))
-}
-
-fn parse_broadcast_type_arg(value: Option<&String>, name: &str) -> Result<BroadcastType, CliError> {
-    value
-        .ok_or_else(|| CliError::invalid_usage(format!("{name} requires a value")))?
-        .parse()
-        .map_err(CliError::invalid_usage)
-}
-
-fn parse_channel_type_arg(value: Option<&String>, name: &str) -> Result<ChannelType, CliError> {
-    value
-        .ok_or_else(|| CliError::invalid_usage(format!("{name} requires a value")))?
-        .parse()
-        .map_err(CliError::invalid_usage)
-}
-
-fn parse_duplicate_title_check_arg(
-    value: Option<&String>,
-    name: &str,
-) -> Result<DuplicateTitleCheckScope, CliError> {
-    value
-        .ok_or_else(|| CliError::invalid_usage(format!("{name} requires a value")))?
-        .parse()
-        .map_err(CliError::invalid_usage)
-}
-
-fn parse_datetime_arg(
-    value: Option<&String>,
-    name: &str,
-) -> Result<DateTime<FixedOffset>, CliError> {
-    DateTime::parse_from_rfc3339(
-        value.ok_or_else(|| CliError::invalid_usage(format!("{name} requires a value")))?,
-    )
-    .map_err(|_| CliError::invalid_usage(format!("{name} must be RFC 3339 datetime")))
+fn parse_datetime_value(value: &str) -> Result<DateTime<FixedOffset>, CliError> {
+    DateTime::parse_from_rfc3339(value)
+        .map_err(|_| CliError::invalid_usage("datetime must be RFC 3339 datetime"))
 }
 
 fn parse_search_date_range(value: &str) -> Result<SearchDateInfo, CliError> {
@@ -805,33 +857,6 @@ fn invalid_search_date_range(value: &str) -> CliError {
     CliError::invalid_usage(format!(
         "date range must be start-dow:HH:MM-end-dow:HH:MM with day 0..=6, hour 0..=23, and minute 0..=59: {value}"
     ))
-}
-
-fn parse_recording_mode_arg(value: Option<&String>, name: &str) -> Result<RecordingMode, CliError> {
-    value
-        .ok_or_else(|| CliError::invalid_usage(format!("{name} requires a value")))?
-        .parse()
-        .map_err(CliError::invalid_usage)
-}
-
-fn parse_service_recording_mode_arg(
-    value: Option<&String>,
-    name: &str,
-) -> Result<ServiceRecordingMode, CliError> {
-    value
-        .ok_or_else(|| CliError::invalid_usage(format!("{name} requires a value")))?
-        .parse()
-        .map_err(CliError::invalid_usage)
-}
-
-fn parse_post_recording_mode_arg(
-    value: Option<&String>,
-    name: &str,
-) -> Result<PostRecordingMode, CliError> {
-    value
-        .ok_or_else(|| CliError::invalid_usage(format!("{name} requires a value")))?
-        .parse()
-        .map_err(CliError::invalid_usage)
 }
 
 fn parse_plugin_kind(value: &str) -> Result<PluginKind, CliError> {
@@ -1252,108 +1277,9 @@ fn format_notify_status_plain(value: &NotifySrvInfo) -> String {
     )
 }
 
-pub fn help_text() -> &'static str {
-    "EDCB CtrlCmd command line interface
-
-USAGE:
-  edcb [global flags] <command>
-  edcb [global flags] recorded get <info-id>
-  edcb [global flags] programs search [search options]
-  edcb [global flags] programs timetable [timetable options]
-  edcb [global flags] reservation-conditions create [search options] [recording options] --yes
-  edcb [global flags] reservation-conditions update <condition-id> [search options] [recording options] --yes
-  edcb [global flags] reservation-conditions delete <condition-id> --yes
-  edcb [global flags] reserves create --event <onid:tsid:sid:eid> [recording options] --yes
-  edcb [global flags] reserves update <reserve-id> [recording options] --yes
-  edcb [global flags] reserves delete <reserve-id> --yes
-  edcb [global flags] plugins <write|rec_name>
-
-COMMANDS:
-  services
-  reserves
-  recorded list
-  recorded get <info-id>
-  programs search [search options]
-  programs timetable [timetable options]
-  reservation-conditions
-  reservation-conditions get <condition-id>
-  reservation-conditions create [search options] [recording options] --yes
-  reservation-conditions update <condition-id> [search options] [recording options] --yes
-  reservation-conditions delete <condition-id> --yes
-  reserves get <reserve-id>
-  reserves preview --event <onid:tsid:sid:eid> [recording options]
-  reserves create --event <onid:tsid:sid:eid> [recording options] --yes
-  reserves update <reserve-id> [recording options] --yes
-  reserves delete <reserve-id> --yes
-  tuner-reserves
-  tuner-processes
-  plugins <write|rec_name>
-  notify-status
-
-GLOBAL FLAGS:
-  -h, --help                 Show this help
-      --version              Show version
-      --host <host>          EDCB host (env: EDCB_HOST, default: 127.0.0.1)
-      --port <port>          EDCB CtrlCmd port (env: EDCB_PORT, default: 4510)
-      --timeout-seconds <n>  Request timeout (env: EDCB_TIMEOUT_SECONDS, default: 15)
-      --json                 Print pretty JSON
-      --plain                Print stable line-based output
-
-PROGRAM SEARCH OPTIONS:
-      --keyword <text>
-      --exclude-keyword <text>
-      --title-only
-      --case-sensitive
-      --regex
-      --fuzzy
-      --service <onid:tsid:sid>                     Repeatable
-      --genre <major:middle[:user_nibble]>          Repeatable
-      --exclude-genre-ranges
-      --date-range <start-dow:HH:MM-end-dow:HH:MM> Repeatable; 0 is Sunday
-      --exclude-date-ranges
-      --duration-min <minutes>
-      --duration-max <minutes>
-      --free-ca <all|free|paid>
-      --search-enable | --search-disable
-      --duplicate-title-check <none|same-channel|all-channels>
-      --duplicate-title-check-days <days>
-
-TIMETABLE OPTIONS:
-      --service <onid:tsid:sid>          Repeatable
-      --start-time <RFC3339 datetime>
-      --end-time <RFC3339 datetime>
-      --channel-type <gr|bs|cs|catv|sky|bs4k>
-
-RECORDING OPTIONS:
-      --priority <1-5>
-      --enable | --disable
-      --recording-mode <all|all-without-decoding|specified|specified-without-decoding|view>
-      --start-margin <seconds> --end-margin <seconds>
-      --caption <default|enable|disable> --data <default|enable|disable>
-      --post-recording <default|nothing|standby|standby-and-reboot|suspend|suspend-and-reboot|shutdown>
-
-EXAMPLES:
-  edcb services
-  edcb --json services
-  edcb reserves --plain
-  edcb recorded list
-  edcb recorded get 1 --json
-  edcb programs search --keyword ニュース --title-only
-  edcb programs search --keyword ニュース --date-range 1:19:00-1:23:00
-  edcb programs search --keyword ニュース --duration-min 30 --duration-max 120 --free-ca free
-  edcb programs timetable --channel-type gr
-  edcb programs timetable --service 32736:32736:1024 --start-time 2026-06-29T19:00:00+09:00 --end-time 2026-06-29T23:00:00+09:00
-  edcb reservation-conditions --json
-  edcb reservation-conditions create --keyword ニュース --genre 0:1 --priority 4 --yes
-  edcb reservation-conditions update 77 --keyword ニュース --duplicate-title-check same-channel --yes
-  edcb reserves get 1 --json
-  edcb reserves preview --event 32736:32736:1024:4208
-  edcb reserves create --event 32736:32736:1024:4208 --priority 4 --yes
-  edcb reserves update 1 --disable --yes
-  edcb reserves delete 1 --yes
-  edcb plugins write
-  edcb --host 172.18.0.7 notify-status
-"
+pub fn help_text() -> String {
+    let mut command = RawCli::command();
+    command.render_long_help().to_string()
 }
 
 pub fn version_text() -> String {

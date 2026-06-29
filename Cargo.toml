@@ -11,6 +11,7 @@ path = "src/lib.rs"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+clap = { version = "4", features = ["derive"] }
 encoding_rs = "0.8"
 rmcp = { version = "1.8", features = ["client", "transport-io"] }
 schemars = "1"

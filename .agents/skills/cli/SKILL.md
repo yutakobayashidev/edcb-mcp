@@ -160,5 +160,5 @@ Recording options:
 - If a mutation command is rejected locally, check that `--yes` is present.
 - If a reservation command needs an event key, run `programs search` first.
 - If output is hard to parse, rerun with `--json`.
-- If behavior or command availability is uncertain, run `edcb --help` from the
-  current build before answering.
+- If behavior or command availability is uncertain, run `edcb --help` or
+  `edcb help <command>` from the current build before answering.

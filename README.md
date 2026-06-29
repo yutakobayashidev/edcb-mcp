@@ -134,6 +134,9 @@ CLI options take precedence over environment variables. Defaults are
 Output is a stable line-based summary by default. Use `--json` for full
 structured output.
 
+Run `edcb --help`, `edcb help`, or `edcb help <command>` for clap-generated
+usage, options, and examples from the current build.
+
 Available commands:
 
 - `services`

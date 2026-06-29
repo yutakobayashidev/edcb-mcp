@@ -13,6 +13,13 @@ fn empty_env() -> std::iter::Empty<(&'static str, &'static str)> {
     std::iter::empty()
 }
 
+fn expect_help(action: CliAction) -> String {
+    match action {
+        CliAction::Help(text) => text,
+        other => panic!("expected help action, got {other:?}"),
+    }
+}
+
 #[test]
 fn parses_global_flags_env_and_recorded_get_command() {
     let action = CliAction::from_args_and_env(
@@ -72,7 +79,27 @@ fn help_ignores_other_arguments() {
         CliAction::from_args_and_env(["edcb", "--help", "--host", "bad", "services"], empty_env())
             .unwrap();
 
-    assert_eq!(action, CliAction::Help);
+    let help = expect_help(action);
+    assert!(help.contains("Usage: edcb [OPTIONS] <COMMAND>"));
+}
+
+#[test]
+fn parses_help_subcommand() {
+    let action = CliAction::from_args_and_env(["edcb", "help"], empty_env()).unwrap();
+
+    let help = expect_help(action);
+    assert!(help.contains("Usage: edcb [OPTIONS] <COMMAND>"));
+}
+
+#[test]
+fn parses_subcommand_help() {
+    let action =
+        CliAction::from_args_and_env(["edcb", "programs", "search", "--help"], empty_env())
+            .unwrap();
+
+    let help = expect_help(action);
+    assert!(help.contains("Usage: edcb programs search [OPTIONS]"));
+    assert!(help.contains("--keyword"));
 }
 
 #[test]
@@ -82,6 +109,17 @@ fn invalid_usage_uses_exit_code_2() {
 
     assert_eq!(error.exit_code, 2);
     assert!(error.message.contains("info-id"));
+}
+
+#[test]
+fn rejects_mutually_exclusive_output_modes() {
+    let error =
+        CliAction::from_args_and_env(["edcb", "--json", "--plain", "services"], empty_env())
+            .expect_err("conflicting output modes should fail");
+
+    assert_eq!(error.exit_code, 2);
+    assert!(error.message.contains("--json"));
+    assert!(error.message.contains("--plain"));
 }
 
 #[test]
