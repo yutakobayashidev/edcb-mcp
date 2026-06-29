@@ -1206,6 +1206,27 @@ Priority=5
 }
 
 #[tokio::test]
+async fn get_recording_presets_empty_ini_error_mentions_defaults_fallback() {
+    let files = [FileData {
+        name: "EpgTimerSrv.ini".to_string(),
+        data: Vec::new(),
+    }];
+    let (addr, server) = spawn_single_command_server(2060, encode_file_list_for_test(&files)).await;
+    let client = test_client(addr);
+
+    let error = edcb_tools::flows::get_recording_presets(&client)
+        .await
+        .expect_err("empty EpgTimerSrv.ini should be reported as a useful error");
+    server
+        .await
+        .expect("mock EDCB server task should complete without panicking");
+
+    let message = error.to_string();
+    assert!(message.contains("EpgTimerSrv.ini is empty"));
+    assert!(message.contains("recording defaults"));
+}
+
+#[tokio::test]
 async fn list_channels_builds_snapshot_from_chset5_and_enum_service() {
     let chset5 = "\
 Main TV\tNetwork\t32736\t32736\t1024\t1\t0\t1\t1\t0\n\
@@ -1316,7 +1337,9 @@ async fn create_reservation_with_options_applies_recording_options() {
     let (addr, server) = spawn_command_sequence_server(vec![
         (1029, encode_service_event_list_for_test(&service, &event)),
         (2012, encode_reserve_for_test(&reserve_fixture_for_test())),
+        (2011, encode_reserve_list_for_test(&[])),
         (2013, 5_u16.to_le_bytes().to_vec()),
+        (2011, encode_reserve_list_for_test(&[])),
     ])
     .await;
     let client = test_client(addr);
@@ -1340,8 +1363,59 @@ async fn create_reservation_with_options_applies_recording_options() {
     assert_eq!(reserve.rec_setting.priority, 5);
     assert_eq!(reserve.rec_setting.start_margin, Some(10));
     assert_eq!(reserve.rec_setting.end_margin, Some(20));
+    assert_eq!(&payloads[3][0..2], &5_u16.to_le_bytes());
+    assert_eq!(&payloads[3][6..10], &1_i32.to_le_bytes());
+}
+
+#[tokio::test]
+async fn create_reservation_returns_resolved_reserve_id_after_add() {
+    let (service, event) = service_event_fixture_for_test();
+    let event_key = EventKey {
+        service: ServiceKey {
+            onid: service.onid,
+            tsid: service.tsid,
+            sid: service.sid,
+        },
+        eid: event.eid,
+    };
+    let existing = reserve_fixture_for_test();
+    let mut created = build_reservation_from_event(&existing, &service, &event)
+        .expect("test event should build reservation");
+    created.reserve_id = 519;
+    let (addr, server) = spawn_command_sequence_server(vec![
+        (1029, encode_service_event_list_for_test(&service, &event)),
+        (2012, encode_reserve_for_test(&existing)),
+        (
+            2011,
+            encode_reserve_list_for_test(std::slice::from_ref(&existing)),
+        ),
+        (2013, 5_u16.to_le_bytes().to_vec()),
+        (
+            2011,
+            encode_reserve_list_for_test(&[existing.clone(), created.clone()]),
+        ),
+    ])
+    .await;
+    let client = test_client(addr);
+
+    let reserve = create_reservation_with_options(
+        &client,
+        event_key,
+        &RecordSettingsPatch {
+            priority: Some(5),
+            ..RecordSettingsPatch::default()
+        },
+    )
+    .await
+    .expect("reservation creation should return the resolved created reserve");
+    let payloads = server
+        .await
+        .expect("mock EDCB server task should complete without panicking");
+
+    assert_eq!(reserve.reserve_id, 519);
     assert_eq!(&payloads[2][0..2], &5_u16.to_le_bytes());
-    assert_eq!(&payloads[2][6..10], &1_i32.to_le_bytes());
+    assert_eq!(&payloads[3][0..2], &5_u16.to_le_bytes());
+    assert_eq!(&payloads[4][0..2], &5_u16.to_le_bytes());
 }
 
 #[tokio::test]

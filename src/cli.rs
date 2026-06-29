@@ -1017,7 +1017,7 @@ pub async fn execute(invocation: CliInvocation) -> Result<String, CliError> {
                 .await
                 .map_err(runtime_error)?;
             render(&invocation.output, &value, || {
-                format_reservation_plain(&value)
+                format_reservation_plain("reservation", &value)
             })
         }
         CliCommand::ReservePreview { event_key, options } => {
@@ -1025,7 +1025,7 @@ pub async fn execute(invocation: CliInvocation) -> Result<String, CliError> {
                 .await
                 .map_err(runtime_error)?;
             render(&invocation.output, &value, || {
-                format_reservation_plain(&value)
+                format_reservation_plain("preview", &value)
             })
         }
         CliCommand::ReserveCreate { event_key, options } => {
@@ -1033,7 +1033,7 @@ pub async fn execute(invocation: CliInvocation) -> Result<String, CliError> {
                 .await
                 .map_err(runtime_error)?;
             render(&invocation.output, &value, || {
-                format_reservation_plain(&value)
+                format_reservation_plain("created", &value)
             })
         }
         CliCommand::ReserveUpdate {
@@ -1044,7 +1044,7 @@ pub async fn execute(invocation: CliInvocation) -> Result<String, CliError> {
                 .await
                 .map_err(runtime_error)?;
             render(&invocation.output, &value, || {
-                format_reservation_plain(&value)
+                format_reservation_plain("updated", &value)
             })
         }
         CliCommand::ReserveDelete(reserve_id) => {
@@ -1052,7 +1052,7 @@ pub async fn execute(invocation: CliInvocation) -> Result<String, CliError> {
                 .await
                 .map_err(runtime_error)?;
             render(&invocation.output, &value, || {
-                format_reservation_plain(&value)
+                format_reservation_plain("deleted", &value)
             })
         }
         CliCommand::TunerReserves => {
@@ -1172,9 +1172,11 @@ fn push_timetable_program_lines(
     }
 }
 
-fn format_reservation_plain(reserve: &ReserveData) -> String {
+fn format_reservation_plain(action: &str, reserve: &ReserveData) -> String {
     format!(
-        "{}:{}:{}:{}\t{}\t{}\t{}\n",
+        "{}\t{}\t{}:{}:{}:{}\t{}\t{}\t{}\n",
+        action,
+        reserve.reserve_id,
         reserve.onid,
         reserve.tsid,
         reserve.sid,
@@ -1207,17 +1209,28 @@ fn format_channels_plain(channels: &[Channel]) -> String {
         .iter()
         .map(|channel| {
             format!(
-                "{}\t{}:{}:{}\t{:?}\t{}\t{}\n",
+                "{}\t{}:{}:{}\t{}\t{}\t{}\n",
                 channel.display_channel_id,
                 channel.service_key.onid,
                 channel.service_key.tsid,
                 channel.service_key.sid,
-                channel.channel_type,
+                channel_type_name(channel.channel_type),
                 channel.remocon_id,
                 channel.name
             )
         })
         .collect()
+}
+
+fn channel_type_name(channel_type: ChannelType) -> &'static str {
+    match channel_type {
+        ChannelType::Gr => "GR",
+        ChannelType::Bs => "BS",
+        ChannelType::Cs => "CS",
+        ChannelType::Catv => "CATV",
+        ChannelType::Sky => "SKY",
+        ChannelType::Bs4k => "BS4K",
+    }
 }
 
 fn format_record_settings_plain(settings: &RecordSettings) -> String {
@@ -1378,4 +1391,88 @@ fn format_notify_status_plain(value: &NotifySrvInfo) -> String {
 
 pub fn version_text() -> String {
     format!("edcb {VERSION}\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::TimeZone;
+
+    use super::{format_channels_plain, format_reservation_plain};
+    use crate::codec::jst;
+    use crate::types::{Channel, ChannelType, RecSettingData, ReserveData, ServiceKey};
+
+    #[test]
+    fn reservation_plain_output_includes_action_and_reserve_id() {
+        let reserve = ReserveData {
+            title: "Test Program".to_string(),
+            start_time: jst()
+                .with_ymd_and_hms(2026, 6, 29, 22, 0, 0)
+                .single()
+                .expect("test start time should be valid"),
+            duration_second: 1800,
+            station_name: "Test Service".to_string(),
+            onid: 1,
+            tsid: 2,
+            sid: 3,
+            eid: 4,
+            comment: String::new(),
+            reserve_id: 519,
+            overlap_mode: 0,
+            start_time_epg: jst()
+                .with_ymd_and_hms(2026, 6, 29, 22, 0, 0)
+                .single()
+                .expect("test EPG start time should be valid"),
+            rec_setting: RecSettingData {
+                rec_mode: 1,
+                priority: 1,
+                tuijyuu_flag: true,
+                service_mode: 0,
+                pittari_flag: false,
+                bat_file_path: String::new(),
+                rec_folder_list: Vec::new(),
+                suspend_mode: 0,
+                reboot_flag: false,
+                start_margin: None,
+                end_margin: None,
+                continue_rec_flag: false,
+                partial_rec_flag: 0,
+                tuner_id: 0,
+                partial_rec_folder: Vec::new(),
+            },
+            rec_file_name_list: Vec::new(),
+        };
+
+        assert_eq!(
+            format_reservation_plain("created", &reserve),
+            "created\t519\t1:2:3:4\t2026-06-29T22:00:00+09:00\tTest Service\tTest Program\n"
+        );
+    }
+
+    #[test]
+    fn channel_plain_output_uses_konomitv_channel_type_names() {
+        let channels = [Channel {
+            id: "NID32736-SID1024".to_string(),
+            display_channel_id: "gr011".to_string(),
+            service_key: ServiceKey {
+                onid: 32736,
+                tsid: 32736,
+                sid: 1024,
+            },
+            network_id: 32736,
+            transport_stream_id: 32736,
+            service_id: 1024,
+            remocon_id: 1,
+            channel_number: "011".to_string(),
+            channel_type: ChannelType::Gr,
+            name: "NHK総合1・東京".to_string(),
+            is_subchannel: false,
+            is_radiochannel: false,
+            is_watchable: true,
+        }];
+
+        assert_eq!(
+            format_channels_plain(&channels),
+            "gr011\t32736:32736:1024\tGR\t1\tNHK総合1・東京\n"
+        );
+    }
 }

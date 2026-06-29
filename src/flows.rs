@@ -631,7 +631,8 @@ pub async fn get_recording_presets(client: &EdcbClient) -> Result<RecordSettings
         .ok_or_else(|| EdcbError::InvalidInput("EpgTimerSrv.ini was not returned".to_string()))?;
     if file.data.is_empty() {
         return Err(EdcbError::InvalidInput(
-            "EpgTimerSrv.ini is empty".to_string(),
+            "EpgTimerSrv.ini is empty; use `recording defaults` when presets are unavailable"
+                .to_string(),
         ));
     }
     let ini = convert_bytes_to_string(&file.data, "cp932");
@@ -772,8 +773,26 @@ pub async fn create_reservation_with_options(
     options: &RecordSettingsPatch,
 ) -> Result<ReserveData> {
     let reserve = preview_reservation_with_options(client, event_key, options).await?;
+    let existing_ids = client
+        .enum_reserve()
+        .await?
+        .into_iter()
+        .map(|reserve| reserve.reserve_id)
+        .collect::<HashSet<_>>();
     client.add_reserve(&reserve).await?;
-    Ok(reserve)
+    let created = client
+        .enum_reserve()
+        .await?
+        .into_iter()
+        .find(|candidate| {
+            !existing_ids.contains(&candidate.reserve_id)
+                && candidate.onid == reserve.onid
+                && candidate.tsid == reserve.tsid
+                && candidate.sid == reserve.sid
+                && candidate.eid == reserve.eid
+        })
+        .unwrap_or(reserve);
+    Ok(created)
 }
 
 pub async fn update_reservation(

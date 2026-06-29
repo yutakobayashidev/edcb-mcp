@@ -167,7 +167,9 @@ Available commands:
 `reserves preview` is a client-side preview that fetches the EDCB default
 reservation settings and the target event, then builds the `ReserveData` that
 would be sent. EDCB does not expose a reservation dry-run command. Use
-`reserves create ... --yes` to send the actual add-reservation command.
+`reserves create ... --yes` to send the actual add-reservation command. After
+creation, the CLI fetches reservations again and returns the newly assigned
+reservation ID when it can be resolved from the before/after difference.
 `reserves update ... --yes` fetches the existing reservation, applies recording
 option changes, sends the full updated reservation to EDCB, and returns the
 updated reservation data.
@@ -249,6 +251,8 @@ edcb --json channels
 `recording defaults` decodes the EDCB default reservation settings returned by
 `GetReserve2(0x7fffffff)`. `recording presets` reads `EpgTimerSrv.ini` through
 `FileCopy2` and returns global defaults plus recording presets, including ID 0.
+If EDCB returns an empty `EpgTimerSrv.ini`, use `recording defaults` for the
+effective reservation default.
 
 ```sh
 edcb recording defaults

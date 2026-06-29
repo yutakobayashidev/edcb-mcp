@@ -144,6 +144,11 @@ edcb reserves update 1 --disable --yes
 edcb reserves delete 1 --yes
 ```
 
+`reserves create` sends `AddReserve`, fetches reservations again, and returns
+the newly assigned reservation ID when the created reservation can be resolved.
+Plain reservation mutation output starts with an action label such as
+`created`, `updated`, or `deleted`.
+
 EDCB does not expose reservation dry-run. Use `reserves preview` for the
 client-side preview that builds the reservation payload without sending a
 mutation command.
