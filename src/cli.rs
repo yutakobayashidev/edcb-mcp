@@ -5,7 +5,8 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::{
-    EdcbClient, EventKey, PluginKind, ProgramSearchQuery, ServiceKey, flows,
+    EdcbClient, EventKey, PluginKind, PostRecordingMode, ProgramSearchQuery, RecordSettingsPatch,
+    RecordingMode, ServiceKey, ServiceRecordingMode, flows,
     types::{
         EventInfo, NotifySrvInfo, RecFileInfo, ReserveData, ServiceInfo, TunerProcessStatusInfo,
         TunerReserveInfo,
@@ -29,8 +30,18 @@ pub enum CliCommand {
     RecordedGet(i32),
     ProgramsSearch(ProgramSearchQuery),
     ReserveGet(i32),
-    ReservePreview(EventKey),
-    ReserveCreate(EventKey),
+    ReservePreview {
+        event_key: EventKey,
+        options: RecordSettingsPatch,
+    },
+    ReserveCreate {
+        event_key: EventKey,
+        options: RecordSettingsPatch,
+    },
+    ReserveUpdate {
+        reserve_id: i32,
+        options: RecordSettingsPatch,
+    },
     ReserveDelete(i32),
     TunerReserves,
     TunerProcesses,
@@ -167,7 +178,8 @@ where
             }
             "--json" => invocation.output = OutputMode::Json,
             "--plain" => invocation.output = OutputMode::Plain,
-            "--keyword" | "--service" | "--event" => {
+            "--keyword" | "--service" | "--event" | "--priority" | "--recording-mode"
+            | "--start-margin" | "--end-margin" | "--caption" | "--data" | "--post-recording" => {
                 let key = args[index].clone();
                 index += 1;
                 let value = args
@@ -176,7 +188,9 @@ where
                 positionals.push(key);
                 positionals.push(value.clone());
             }
-            "--title-only" | "--yes" => positionals.push(args[index].clone()),
+            "--title-only" | "--yes" | "--enable" | "--disable" => {
+                positionals.push(args[index].clone())
+            }
             value if value.starts_with('-') => {
                 return Err(CliError::invalid_usage(format!("unknown argument {value}")));
             }
@@ -209,19 +223,35 @@ fn parse_command(positionals: &[String]) -> Result<CliCommand, CliError> {
             Ok(CliCommand::ProgramsSearch(parse_program_search(rest)?))
         }
         [command, subcommand, rest @ ..] if command == "reserves" && subcommand == "preview" => {
-            Ok(CliCommand::ReservePreview(parse_event_arg(rest)?))
+            let (event_key, options) = parse_event_and_options(rest)?;
+            Ok(CliCommand::ReservePreview { event_key, options })
         }
         [command, subcommand, reserve_id] if command == "reserves" && subcommand == "get" => {
             Ok(CliCommand::ReserveGet(parse_reserve_id(reserve_id)?))
         }
         [command, subcommand, rest @ ..] if command == "reserves" && subcommand == "create" => {
-            let event_key = parse_event_arg(rest)?;
+            let (event_key, options) = parse_event_and_options(rest)?;
             if !rest.iter().any(|value| value == "--yes") {
                 return Err(CliError::invalid_usage(
                     "reserves create requires --yes to confirm mutation",
                 ));
             }
-            Ok(CliCommand::ReserveCreate(event_key))
+            Ok(CliCommand::ReserveCreate { event_key, options })
+        }
+        [command, subcommand, reserve_id, rest @ ..]
+            if command == "reserves" && subcommand == "update" =>
+        {
+            let reserve_id = parse_reserve_id(reserve_id)?;
+            let options = parse_record_settings_options(rest)?;
+            if !rest.iter().any(|value| value == "--yes") {
+                return Err(CliError::invalid_usage(
+                    "reserves update requires --yes to confirm mutation",
+                ));
+            }
+            Ok(CliCommand::ReserveUpdate {
+                reserve_id,
+                options,
+            })
         }
         [command, subcommand, reserve_id, rest @ ..]
             if command == "reserves" && subcommand == "delete" =>
@@ -287,8 +317,9 @@ fn parse_program_search(args: &[String]) -> Result<ProgramSearchQuery, CliError>
     })
 }
 
-fn parse_event_arg(args: &[String]) -> Result<EventKey, CliError> {
+fn parse_event_and_options(args: &[String]) -> Result<(EventKey, RecordSettingsPatch), CliError> {
     let mut event = None;
+    let mut options = RecordSettingsPatch::default();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -298,16 +329,83 @@ fn parse_event_arg(args: &[String]) -> Result<EventKey, CliError> {
                     CliError::invalid_usage("--event requires onid:tsid:sid:eid")
                 })?)?);
             }
-            "--yes" => {}
-            value => {
-                return Err(CliError::invalid_usage(format!(
-                    "unknown reservation argument {value}"
-                )));
-            }
+            _ => parse_record_settings_option(args, &mut index, &mut options)?,
         }
         index += 1;
     }
-    event.ok_or_else(|| CliError::invalid_usage("reservation command requires --event"))
+    Ok((
+        event.ok_or_else(|| CliError::invalid_usage("reservation command requires --event"))?,
+        options,
+    ))
+}
+
+fn parse_record_settings_options(args: &[String]) -> Result<RecordSettingsPatch, CliError> {
+    let mut options = RecordSettingsPatch::default();
+    let mut index = 0;
+    while index < args.len() {
+        parse_record_settings_option(args, &mut index, &mut options)?;
+        index += 1;
+    }
+    Ok(options)
+}
+
+fn parse_record_settings_option(
+    args: &[String],
+    index: &mut usize,
+    options: &mut RecordSettingsPatch,
+) -> Result<(), CliError> {
+    match args[*index].as_str() {
+        "--yes" => {}
+        "--priority" => {
+            *index += 1;
+            options.priority = Some(parse_u8_arg(args.get(*index), "--priority")?);
+        }
+        "--enable" => options.is_enabled = Some(true),
+        "--disable" => options.is_enabled = Some(false),
+        "--recording-mode" => {
+            *index += 1;
+            options.recording_mode = Some(parse_recording_mode_arg(
+                args.get(*index),
+                "--recording-mode",
+            )?);
+        }
+        "--start-margin" => {
+            *index += 1;
+            options.recording_start_margin =
+                Some(parse_i32_arg(args.get(*index), "--start-margin")?);
+        }
+        "--end-margin" => {
+            *index += 1;
+            options.recording_end_margin = Some(parse_i32_arg(args.get(*index), "--end-margin")?);
+        }
+        "--caption" => {
+            *index += 1;
+            options.caption_recording_mode = Some(parse_service_recording_mode_arg(
+                args.get(*index),
+                "--caption",
+            )?);
+        }
+        "--data" => {
+            *index += 1;
+            options.data_broadcasting_recording_mode = Some(parse_service_recording_mode_arg(
+                args.get(*index),
+                "--data",
+            )?);
+        }
+        "--post-recording" => {
+            *index += 1;
+            options.post_recording_mode = Some(parse_post_recording_mode_arg(
+                args.get(*index),
+                "--post-recording",
+            )?);
+        }
+        value => {
+            return Err(CliError::invalid_usage(format!(
+                "unknown reservation argument {value}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn parse_service_key(value: &str) -> Result<ServiceKey, CliError> {
@@ -322,6 +420,47 @@ fn parse_reserve_id(value: &str) -> Result<i32, CliError> {
     value
         .parse()
         .map_err(|_| CliError::invalid_usage(format!("reserve-id must be an integer: {value}")))
+}
+
+fn parse_u8_arg(value: Option<&String>, name: &str) -> Result<u8, CliError> {
+    value
+        .ok_or_else(|| CliError::invalid_usage(format!("{name} requires a value")))?
+        .parse()
+        .map_err(|_| CliError::invalid_usage(format!("{name} must be a number")))
+}
+
+fn parse_i32_arg(value: Option<&String>, name: &str) -> Result<i32, CliError> {
+    value
+        .ok_or_else(|| CliError::invalid_usage(format!("{name} requires a value")))?
+        .parse()
+        .map_err(|_| CliError::invalid_usage(format!("{name} must be an integer")))
+}
+
+fn parse_recording_mode_arg(value: Option<&String>, name: &str) -> Result<RecordingMode, CliError> {
+    value
+        .ok_or_else(|| CliError::invalid_usage(format!("{name} requires a value")))?
+        .parse()
+        .map_err(CliError::invalid_usage)
+}
+
+fn parse_service_recording_mode_arg(
+    value: Option<&String>,
+    name: &str,
+) -> Result<ServiceRecordingMode, CliError> {
+    value
+        .ok_or_else(|| CliError::invalid_usage(format!("{name} requires a value")))?
+        .parse()
+        .map_err(CliError::invalid_usage)
+}
+
+fn parse_post_recording_mode_arg(
+    value: Option<&String>,
+    name: &str,
+) -> Result<PostRecordingMode, CliError> {
+    value
+        .ok_or_else(|| CliError::invalid_usage(format!("{name} requires a value")))?
+        .parse()
+        .map_err(CliError::invalid_usage)
 }
 
 fn parse_plugin_kind(value: &str) -> Result<PluginKind, CliError> {
@@ -388,16 +527,27 @@ pub async fn execute(invocation: CliInvocation) -> Result<String, CliError> {
                 format_reservation_plain(&value)
             })
         }
-        CliCommand::ReservePreview(event_key) => {
-            let value = flows::preview_reservation(&client, event_key)
+        CliCommand::ReservePreview { event_key, options } => {
+            let value = flows::preview_reservation_with_options(&client, event_key, &options)
                 .await
                 .map_err(runtime_error)?;
             render(&invocation.output, &value, || {
                 format_reservation_plain(&value)
             })
         }
-        CliCommand::ReserveCreate(event_key) => {
-            let value = flows::create_reservation(&client, event_key)
+        CliCommand::ReserveCreate { event_key, options } => {
+            let value = flows::create_reservation_with_options(&client, event_key, &options)
+                .await
+                .map_err(runtime_error)?;
+            render(&invocation.output, &value, || {
+                format_reservation_plain(&value)
+            })
+        }
+        CliCommand::ReserveUpdate {
+            reserve_id,
+            options,
+        } => {
+            let value = flows::update_reservation(&client, reserve_id, &options)
                 .await
                 .map_err(runtime_error)?;
             render(&invocation.output, &value, || {
@@ -598,7 +748,8 @@ USAGE:
   edcb [global flags] <command>
   edcb [global flags] recorded get <info-id>
   edcb [global flags] programs search --keyword <text>
-  edcb [global flags] reserves create --event <onid:tsid:sid:eid> --yes
+  edcb [global flags] reserves create --event <onid:tsid:sid:eid> [recording options] --yes
+  edcb [global flags] reserves update <reserve-id> [recording options] --yes
   edcb [global flags] reserves delete <reserve-id> --yes
   edcb [global flags] plugins <write|rec_name>
 
@@ -609,8 +760,9 @@ COMMANDS:
   recorded get <info-id>
   programs search --keyword <text> [--title-only] [--service <onid:tsid:sid>]
   reserves get <reserve-id>
-  reserves preview --event <onid:tsid:sid:eid>
-  reserves create --event <onid:tsid:sid:eid> --yes
+  reserves preview --event <onid:tsid:sid:eid> [recording options]
+  reserves create --event <onid:tsid:sid:eid> [recording options] --yes
+  reserves update <reserve-id> [recording options] --yes
   reserves delete <reserve-id> --yes
   tuner-reserves
   tuner-processes
@@ -626,6 +778,14 @@ GLOBAL FLAGS:
       --json                 Print pretty JSON
       --plain                Print stable line-based output
 
+RECORDING OPTIONS:
+      --priority <1-5>
+      --enable | --disable
+      --recording-mode <all|all-without-decoding|specified|specified-without-decoding|view>
+      --start-margin <seconds> --end-margin <seconds>
+      --caption <default|enable|disable> --data <default|enable|disable>
+      --post-recording <default|nothing|standby|standby-and-reboot|suspend|suspend-and-reboot|shutdown>
+
 EXAMPLES:
   edcb services
   edcb --json services
@@ -635,7 +795,8 @@ EXAMPLES:
   edcb programs search --keyword ニュース --title-only
   edcb reserves get 1 --json
   edcb reserves preview --event 32736:32736:1024:4208
-  edcb reserves create --event 32736:32736:1024:4208 --yes
+  edcb reserves create --event 32736:32736:1024:4208 --priority 4 --yes
+  edcb reserves update 1 --disable --yes
   edcb reserves delete 1 --yes
   edcb plugins write
   edcb --host 172.18.0.7 notify-status

@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use crate::{EdcbClient, EventKey, PluginKind, ProgramSearchQuery, ServiceKey, flows};
+use crate::{
+    EdcbClient, EventKey, PluginKind, ProgramSearchQuery, RecordSettingsPatch, ServiceKey, flows,
+};
 use rmcp::{
     ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -163,12 +165,19 @@ impl SearchProgramsParam {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ReservationEventParam {
     pub event: String,
+    pub options: Option<RecordSettingsPatch>,
 }
 
 impl ReservationEventParam {
     fn try_into_event_key(&self) -> Result<EventKey, String> {
         self.event.parse()
     }
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ReservationUpdateParam {
+    pub reserve_id: i32,
+    pub options: RecordSettingsPatch,
 }
 
 #[derive(Debug, Clone)]
@@ -265,8 +274,11 @@ impl EdcbMcpServer {
         Parameters(params): Parameters<ReservationEventParam>,
     ) -> Result<CallToolResult, String> {
         let event_key = params.try_into_event_key()?;
+        let options = params.options.unwrap_or_default();
         let client = self.client();
-        to_call_tool_result(flows::preview_reservation(&client, event_key).await)
+        to_call_tool_result(
+            flows::preview_reservation_with_options(&client, event_key, &options).await,
+        )
     }
 
     #[tool(
@@ -278,8 +290,25 @@ impl EdcbMcpServer {
         Parameters(params): Parameters<ReservationEventParam>,
     ) -> Result<CallToolResult, String> {
         let event_key = params.try_into_event_key()?;
+        let options = params.options.unwrap_or_default();
         let client = self.client();
-        to_call_tool_result(flows::create_reservation(&client, event_key).await)
+        to_call_tool_result(
+            flows::create_reservation_with_options(&client, event_key, &options).await,
+        )
+    }
+
+    #[tool(
+        name = "update_reservation",
+        description = "Update one EDCB reservation's recording settings by reserve ID"
+    )]
+    pub async fn update_reservation(
+        &self,
+        Parameters(params): Parameters<ReservationUpdateParam>,
+    ) -> Result<CallToolResult, String> {
+        let client = self.client();
+        to_call_tool_result(
+            flows::update_reservation(&client, params.reserve_id, &params.options).await,
+        )
     }
 
     #[tool(

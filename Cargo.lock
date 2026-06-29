@@ -127,6 +127,7 @@ dependencies = [
  "chrono",
  "encoding_rs",
  "rmcp",
+ "schemars",
  "serde",
  "serde_json",
  "thiserror",

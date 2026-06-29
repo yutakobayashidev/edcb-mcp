@@ -12,4 +12,7 @@ mod codec;
 
 pub use client::{EdcbClient, PluginKind};
 pub use error::{EdcbError, Result};
-pub use types::{EventKey, ProgramSearchQuery, ServiceKey};
+pub use types::{
+    EventKey, PostRecordingMode, ProgramSearchQuery, RecordSettingsPatch, RecordingFolder,
+    RecordingMode, ServiceKey, ServiceRecordingMode,
+};

@@ -150,6 +150,18 @@ impl EdcbClient {
         Ok(())
     }
 
+    pub async fn change_reserve(&self, reserve: &ReserveData) -> Result<()> {
+        self.change_reserves(std::slice::from_ref(reserve)).await
+    }
+
+    pub async fn change_reserves(&self, reserves: &[ReserveData]) -> Result<()> {
+        self.send_cmd2(CMD_EPG_SRV_CHG_RESERVE2, |writer| {
+            writer.write_vector(reserves, write_reserve_data)
+        })
+        .await?;
+        Ok(())
+    }
+
     pub async fn delete_reserve(&self, reserve_id: i32) -> Result<()> {
         self.delete_reserves(&[reserve_id]).await
     }

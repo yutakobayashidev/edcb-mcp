@@ -17,7 +17,8 @@ KonomiTV's async usage used as a secondary reference.
 - Service, EPG, reserve, recorded-file, tuner, plugin, auto-add, manual-add,
   and notify-status read APIs
 - Program search, recorded item detail retrieval, reservation detail retrieval,
-  and event-based reservation preview/create/delete
+  and event-based reservation preview/create/update/delete with recording
+  options
 - Utility parsers for `ChSet5.txt`, `LogoData.ini`, logo directory indexes, and
   program extended text
 
@@ -33,7 +34,7 @@ server call these flows instead of embedding CtrlCmd orchestration directly.
 - [ ] Unix domain socket transport
 - [ ] Windows named pipe transport
 - [ ] View app stream / SrvPipe stream helpers
-- [ ] Reserve change, recorded-file, auto-add, and manual-add mutation APIs
+- [ ] Recorded-file, auto-add, and manual-add mutation APIs
 - [x] MCP server surface
 - [ ] HTTP MCP transport
 
@@ -86,8 +87,9 @@ Available commands:
 - `recorded get <info-id>`
 - `programs search --keyword <text> [--title-only] [--service <onid:tsid:sid>]`
 - `reserves get <reserve-id>`
-- `reserves preview --event <onid:tsid:sid:eid>`
-- `reserves create --event <onid:tsid:sid:eid> --yes`
+- `reserves preview --event <onid:tsid:sid:eid> [recording options]`
+- `reserves create --event <onid:tsid:sid:eid> [recording options] --yes`
+- `reserves update <reserve-id> [recording options] --yes`
 - `reserves delete <reserve-id> --yes`
 - `tuner-reserves`
 - `tuner-processes`
@@ -98,10 +100,22 @@ Available commands:
 reservation settings and the target event, then builds the `ReserveData` that
 would be sent. EDCB does not expose a reservation dry-run command. Use
 `reserves create ... --yes` to send the actual add-reservation command.
+`reserves update ... --yes` fetches the existing reservation, applies recording
+option changes, sends the full updated reservation to EDCB, and returns the
+updated reservation data.
 `reserves delete ... --yes` first fetches the reservation by ID, then sends the
 delete command and returns the deleted reservation data.
 `programs search` prints event keys as `onid:tsid:sid:eid`, which can be passed
 to `reserves preview` or `reserves create`.
+
+Common recording options:
+
+- `--priority <1-5>`
+- `--enable` / `--disable`
+- `--recording-mode <all|all-without-decoding|specified|specified-without-decoding|view>`
+- `--start-margin <seconds>` and `--end-margin <seconds>`
+- `--caption <default|enable|disable>` and `--data <default|enable|disable>`
+- `--post-recording <default|nothing|standby|standby-and-reboot|suspend|suspend-and-reboot|shutdown>`
 
 ## MCP Server
 
@@ -130,6 +144,7 @@ Exposed MCP tools:
 - `search_programs`
 - `preview_reservation`
 - `create_reservation`
+- `update_reservation`
 - `delete_reservation`
 - `list_tuner_reserves`
 - `list_tuner_processes`
@@ -138,6 +153,21 @@ Exposed MCP tools:
 
 `preview_reservation` does not mutate EDCB state. `create_reservation` creates
 one reservation from an event key and the server's default reservation settings.
+Both accept an optional `options` object using KonomiTV-style recording setting
+names:
+
+```json
+{
+  "event": "32737:32737:1032:9285",
+  "options": {
+    "priority": 4,
+    "recording_start_margin": 60,
+    "recording_end_margin": 120
+  }
+}
+```
+
+`update_reservation` accepts `reserve_id` and required `options`.
 `delete_reservation` fetches the reservation before deleting it and returns the
 deleted reservation data.
 

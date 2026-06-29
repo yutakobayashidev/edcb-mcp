@@ -4,9 +4,11 @@ use std::time::Duration;
 
 use chrono::Timelike;
 use edcb_mcp::{
-    EdcbClient, EventKey, ProgramSearchQuery, ServiceKey,
+    EdcbClient, EventKey, PostRecordingMode, ProgramSearchQuery, RecordSettingsPatch,
+    RecordingFolder, RecordingMode, ServiceKey, ServiceRecordingMode,
     flows::{
-        build_reservation_from_event, delete_reservation, preview_reservation, search_programs,
+        apply_record_settings_patch, build_reservation_from_event, create_reservation_with_options,
+        delete_reservation, preview_reservation, search_programs, update_reservation,
     },
     test_support::{
         encode_reserve_for_test, encode_service_event_list_for_test, read_request_frame_for_test,
@@ -106,6 +108,48 @@ async fn spawn_two_command_server(
     (addr, handle)
 }
 
+async fn spawn_command_sequence_server(
+    commands: Vec<(i32, Vec<u8>)>,
+) -> (SocketAddr, JoinHandle<Vec<Vec<u8>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("mock EDCB server should bind to a local port");
+    let addr = listener
+        .local_addr()
+        .expect("mock EDCB server should expose its local address");
+
+    let handle = tokio::spawn(async move {
+        let mut payloads = Vec::new();
+        for (expected_command, response_body) in commands {
+            let (mut socket, _) = listener
+                .accept()
+                .await
+                .expect("mock EDCB server should accept a client connection");
+            let (command, payload) = read_request_frame_for_test(&mut socket).await;
+            assert_eq!(command, expected_command);
+            socket
+                .write_i32_le(1)
+                .await
+                .expect("mock EDCB server should write response status");
+            socket
+                .write_i32_le(
+                    i32::try_from(response_body.len())
+                        .expect("response body length should fit in an EDCB frame"),
+                )
+                .await
+                .expect("mock EDCB server should write response length");
+            socket
+                .write_all(&response_body)
+                .await
+                .expect("mock EDCB server should write response body");
+            payloads.push(payload);
+        }
+        payloads
+    });
+
+    (addr, handle)
+}
+
 #[test]
 fn parses_service_and_event_keys() {
     let service = ServiceKey::from_str("32736:32736:1024")
@@ -122,6 +166,89 @@ fn parses_service_and_event_keys() {
 
     assert!(ServiceKey::from_str("32736:32736").is_err());
     assert!(EventKey::from_str("32736:32736:1024:nope").is_err());
+}
+
+#[test]
+fn applies_record_settings_patch_to_edcb_rec_setting() {
+    let mut rec_setting = reserve_fixture_for_test().rec_setting;
+    let patch = RecordSettingsPatch {
+        is_enabled: Some(false),
+        priority: Some(4),
+        recording_mode: Some(RecordingMode::SpecifiedServiceWithoutDecoding),
+        recording_start_margin: Some(60),
+        recording_end_margin: Some(120),
+        caption_recording_mode: Some(ServiceRecordingMode::Enable),
+        data_broadcasting_recording_mode: Some(ServiceRecordingMode::Disable),
+        post_recording_mode: Some(PostRecordingMode::StandbyAndReboot),
+        post_recording_bat_file_path: Some("after.bat".to_string()),
+        recording_folders: Some(vec![RecordingFolder {
+            recording_folder_path: "/recorded".to_string(),
+            recording_file_name_template: Some("$title$".to_string()),
+            is_oneseg_separate_recording_folder: false,
+        }]),
+        is_event_relay_follow_enabled: Some(false),
+        is_exact_recording_enabled: Some(true),
+        is_oneseg_separate_output_enabled: Some(true),
+        is_sequential_recording_in_single_file_enabled: Some(true),
+        forced_tuner_id: Some(7),
+    };
+
+    apply_record_settings_patch(&mut rec_setting, &patch)
+        .expect("valid recording settings patch should apply");
+
+    assert_eq!(rec_setting.rec_mode, 7);
+    assert_eq!(rec_setting.priority, 4);
+    assert!(!rec_setting.tuijyuu_flag);
+    assert_eq!(rec_setting.service_mode, 0x0000_0001 | 0x0000_0010);
+    assert!(rec_setting.pittari_flag);
+    assert_eq!(rec_setting.bat_file_path, "after.bat");
+    assert_eq!(rec_setting.rec_folder_list.len(), 1);
+    assert_eq!(rec_setting.rec_folder_list[0].rec_folder, "/recorded");
+    assert_eq!(
+        rec_setting.rec_folder_list[0].rec_name_plug_in,
+        "RecName_Macro.dll?$title$"
+    );
+    assert_eq!(rec_setting.suspend_mode, 1);
+    assert!(rec_setting.reboot_flag);
+    assert_eq!(rec_setting.start_margin, Some(60));
+    assert_eq!(rec_setting.end_margin, Some(120));
+    assert!(rec_setting.continue_rec_flag);
+    assert_eq!(rec_setting.partial_rec_flag, 1);
+    assert_eq!(rec_setting.tuner_id, 7);
+}
+
+#[test]
+fn rejects_invalid_record_settings_patch_values() {
+    let mut rec_setting = reserve_fixture_for_test().rec_setting;
+    let error = apply_record_settings_patch(
+        &mut rec_setting,
+        &RecordSettingsPatch {
+            priority: Some(6),
+            ..RecordSettingsPatch::default()
+        },
+    )
+    .expect_err("priority outside 1..=5 should be rejected");
+    assert!(error.to_string().contains("priority"));
+
+    let error = apply_record_settings_patch(
+        &mut rec_setting,
+        &RecordSettingsPatch {
+            recording_start_margin: Some(30),
+            ..RecordSettingsPatch::default()
+        },
+    )
+    .expect_err("one-sided margins should be rejected");
+    assert!(error.to_string().contains("margin"));
+
+    let error = apply_record_settings_patch(
+        &mut rec_setting,
+        &RecordSettingsPatch {
+            caption_recording_mode: Some(ServiceRecordingMode::Enable),
+            ..RecordSettingsPatch::default()
+        },
+    )
+    .expect_err("caption/data modes should be explicit together");
+    assert!(error.to_string().contains("caption"));
 }
 
 #[tokio::test]
@@ -307,6 +434,87 @@ async fn add_reserve_sends_versioned_reserve_vector() {
             .windows(title_bytes.len())
             .any(|window| window == title_bytes)
     );
+}
+
+#[tokio::test]
+async fn create_reservation_with_options_applies_recording_options() {
+    let (service, event) = service_event_fixture_for_test();
+    let event_key = EventKey {
+        service: ServiceKey {
+            onid: service.onid,
+            tsid: service.tsid,
+            sid: service.sid,
+        },
+        eid: event.eid,
+    };
+    let (addr, server) = spawn_command_sequence_server(vec![
+        (1029, encode_service_event_list_for_test(&service, &event)),
+        (2012, encode_reserve_for_test(&reserve_fixture_for_test())),
+        (2013, 5_u16.to_le_bytes().to_vec()),
+    ])
+    .await;
+    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
+    client.set_timeout(Duration::from_secs(1));
+
+    let reserve = create_reservation_with_options(
+        &client,
+        event_key,
+        &RecordSettingsPatch {
+            priority: Some(5),
+            recording_start_margin: Some(10),
+            recording_end_margin: Some(20),
+            ..RecordSettingsPatch::default()
+        },
+    )
+    .await
+    .expect("reservation creation should apply recording options");
+    let payloads = server
+        .await
+        .expect("mock EDCB server task should complete without panicking");
+
+    assert_eq!(reserve.rec_setting.priority, 5);
+    assert_eq!(reserve.rec_setting.start_margin, Some(10));
+    assert_eq!(reserve.rec_setting.end_margin, Some(20));
+    assert_eq!(&payloads[2][0..2], &5_u16.to_le_bytes());
+    assert_eq!(&payloads[2][6..10], &1_i32.to_le_bytes());
+}
+
+#[tokio::test]
+async fn update_reservation_changes_existing_record_settings() {
+    let mut existing = reserve_fixture_for_test();
+    existing.reserve_id = 518;
+    let mut updated = existing.clone();
+    updated.rec_setting.priority = 5;
+    let (addr, server) = spawn_command_sequence_server(vec![
+        (2012, encode_reserve_for_test(&existing)),
+        (2015, 5_u16.to_le_bytes().to_vec()),
+        (2012, encode_reserve_for_test(&updated)),
+    ])
+    .await;
+    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
+    client.set_timeout(Duration::from_secs(1));
+
+    let reserve = update_reservation(
+        &client,
+        existing.reserve_id,
+        &RecordSettingsPatch {
+            priority: Some(5),
+            ..RecordSettingsPatch::default()
+        },
+    )
+    .await
+    .expect("reservation update should change existing record settings");
+    let payloads = server
+        .await
+        .expect("mock EDCB server task should complete without panicking");
+
+    assert_eq!(reserve.rec_setting.priority, 5);
+    assert_eq!(&payloads[0][0..2], &5_u16.to_le_bytes());
+    assert_eq!(&payloads[0][2..6], &existing.reserve_id.to_le_bytes());
+    assert_eq!(&payloads[1][0..2], &5_u16.to_le_bytes());
+    assert_eq!(&payloads[1][6..10], &1_i32.to_le_bytes());
+    assert_eq!(&payloads[2][0..2], &5_u16.to_le_bytes());
+    assert_eq!(&payloads[2][2..6], &existing.reserve_id.to_le_bytes());
 }
 
 #[tokio::test]

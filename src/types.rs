@@ -1,7 +1,8 @@
 use std::str::FromStr;
 
 use chrono::{DateTime, FixedOffset};
-use serde::Serialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ServiceKey {
@@ -120,6 +121,132 @@ pub struct RecSettingData {
     pub partial_rec_flag: u8,
     pub tuner_id: u32,
     pub partial_rec_folder: Vec<RecFileSetInfo>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "PascalCase")]
+pub enum RecordingMode {
+    AllServices,
+    AllServicesWithoutDecoding,
+    SpecifiedService,
+    SpecifiedServiceWithoutDecoding,
+    View,
+}
+
+impl FromStr for RecordingMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match normalize_option(value).as_str() {
+            "all" | "allservices" => Ok(Self::AllServices),
+            "allwithoutdecoding" | "allserviceswithoutdecoding" => {
+                Ok(Self::AllServicesWithoutDecoding)
+            }
+            "specified" | "specifiedservice" => Ok(Self::SpecifiedService),
+            "specifiedwithoutdecoding" | "specifiedservicewithoutdecoding" => {
+                Ok(Self::SpecifiedServiceWithoutDecoding)
+            }
+            "view" => Ok(Self::View),
+            _ => Err(format!(
+                "recording mode must be all, all-without-decoding, specified, specified-without-decoding, or view: {value}"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "PascalCase")]
+pub enum ServiceRecordingMode {
+    Default,
+    Enable,
+    Disable,
+}
+
+impl FromStr for ServiceRecordingMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match normalize_option(value).as_str() {
+            "default" => Ok(Self::Default),
+            "enable" | "enabled" => Ok(Self::Enable),
+            "disable" | "disabled" => Ok(Self::Disable),
+            _ => Err(format!(
+                "service recording mode must be default, enable, or disable: {value}"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "PascalCase")]
+pub enum PostRecordingMode {
+    Default,
+    Nothing,
+    Standby,
+    StandbyAndReboot,
+    Suspend,
+    SuspendAndReboot,
+    Shutdown,
+}
+
+impl FromStr for PostRecordingMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match normalize_option(value).as_str() {
+            "default" => Ok(Self::Default),
+            "nothing" => Ok(Self::Nothing),
+            "standby" => Ok(Self::Standby),
+            "standbyandreboot" => Ok(Self::StandbyAndReboot),
+            "suspend" => Ok(Self::Suspend),
+            "suspendandreboot" => Ok(Self::SuspendAndReboot),
+            "shutdown" => Ok(Self::Shutdown),
+            _ => Err(format!(
+                "post-recording mode must be default, nothing, standby, standby-and-reboot, suspend, suspend-and-reboot, or shutdown: {value}"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RecordingFolder {
+    pub recording_folder_path: String,
+    pub recording_file_name_template: Option<String>,
+    #[serde(default)]
+    pub is_oneseg_separate_recording_folder: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RecordSettingsPatch {
+    pub is_enabled: Option<bool>,
+    pub priority: Option<u8>,
+    pub recording_folders: Option<Vec<RecordingFolder>>,
+    pub recording_start_margin: Option<i32>,
+    pub recording_end_margin: Option<i32>,
+    pub recording_mode: Option<RecordingMode>,
+    pub caption_recording_mode: Option<ServiceRecordingMode>,
+    pub data_broadcasting_recording_mode: Option<ServiceRecordingMode>,
+    pub post_recording_mode: Option<PostRecordingMode>,
+    pub post_recording_bat_file_path: Option<String>,
+    pub is_event_relay_follow_enabled: Option<bool>,
+    pub is_exact_recording_enabled: Option<bool>,
+    pub is_oneseg_separate_output_enabled: Option<bool>,
+    pub is_sequential_recording_in_single_file_enabled: Option<bool>,
+    pub forced_tuner_id: Option<u32>,
+}
+
+impl RecordSettingsPatch {
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+fn normalize_option(value: &str) -> String {
+    value
+        .chars()
+        .filter(|value| *value != '-' && *value != '_')
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

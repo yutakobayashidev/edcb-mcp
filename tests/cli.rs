@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use edcb_mcp::{
-    EventKey, PluginKind, ProgramSearchQuery, ServiceKey,
+    EventKey, PluginKind, ProgramSearchQuery, RecordingMode, ServiceKey, ServiceRecordingMode,
     cli::{CliAction, CliCommand, CliInvocation, OutputMode, format_services_plain},
     types::ServiceInfo,
 };
@@ -143,16 +143,81 @@ fn parses_reservation_preview_and_create_commands() {
     assert!(matches!(
         preview,
         CliAction::Run(CliInvocation {
-            command: CliCommand::ReservePreview(parsed),
+            command: CliCommand::ReservePreview {
+                event_key: parsed,
+                ..
+            },
             ..
         }) if parsed == event
     ));
     assert!(matches!(
         create,
         CliAction::Run(CliInvocation {
-            command: CliCommand::ReserveCreate(parsed),
+            command: CliCommand::ReserveCreate {
+                event_key: parsed,
+                ..
+            },
             ..
         }) if parsed == event
+    ));
+}
+
+#[test]
+fn parses_reservation_commands_with_recording_options() {
+    let preview = CliAction::from_args_and_env(
+        [
+            "edcb",
+            "reserves",
+            "preview",
+            "--event",
+            "1:2:3:4",
+            "--priority",
+            "4",
+            "--start-margin",
+            "10",
+            "--end-margin",
+            "20",
+            "--caption",
+            "enable",
+            "--data",
+            "disable",
+        ],
+        empty_env(),
+    )
+    .expect("reservation preview options should parse");
+    let update = CliAction::from_args_and_env(
+        [
+            "edcb",
+            "reserves",
+            "update",
+            "42",
+            "--disable",
+            "--recording-mode",
+            "specified-without-decoding",
+            "--yes",
+        ],
+        empty_env(),
+    )
+    .expect("reservation update options should parse");
+
+    assert!(matches!(
+        preview,
+        CliAction::Run(CliInvocation {
+            command: CliCommand::ReservePreview { options, .. },
+            ..
+        }) if options.priority == Some(4)
+            && options.recording_start_margin == Some(10)
+            && options.recording_end_margin == Some(20)
+            && options.caption_recording_mode == Some(ServiceRecordingMode::Enable)
+            && options.data_broadcasting_recording_mode == Some(ServiceRecordingMode::Disable)
+    ));
+    assert!(matches!(
+        update,
+        CliAction::Run(CliInvocation {
+            command: CliCommand::ReserveUpdate { reserve_id: 42, options },
+            ..
+        }) if options.is_enabled == Some(false)
+            && options.recording_mode == Some(RecordingMode::SpecifiedServiceWithoutDecoding)
     ));
 }
 

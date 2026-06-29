@@ -152,6 +152,7 @@ fn mcp_server_exposes_v1_tools() {
             "list_tuner_reserves",
             "preview_reservation",
             "search_programs",
+            "update_reservation",
         ]
     );
 }
