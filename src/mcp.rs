@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use crate::{EdcbClient, EventKey, PluginKind, ProgramSearchQuery, ServiceKey};
+use crate::{EdcbClient, EventKey, PluginKind, ProgramSearchQuery, ServiceKey, flows};
 use rmcp::{
     ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -235,7 +235,8 @@ impl EdcbMcpServer {
         Parameters(params): Parameters<SearchProgramsParam>,
     ) -> Result<CallToolResult, String> {
         let query = params.try_into_query()?;
-        to_call_tool_result(self.client().search_programs(&query).await)
+        let client = self.client();
+        to_call_tool_result(flows::search_programs(&client, &query).await)
     }
 
     #[tool(
@@ -247,7 +248,8 @@ impl EdcbMcpServer {
         Parameters(params): Parameters<ReservationEventParam>,
     ) -> Result<CallToolResult, String> {
         let event_key = params.try_into_event_key()?;
-        to_call_tool_result(self.client().preview_reservation(event_key).await)
+        let client = self.client();
+        to_call_tool_result(flows::preview_reservation(&client, event_key).await)
     }
 
     #[tool(
@@ -259,7 +261,8 @@ impl EdcbMcpServer {
         Parameters(params): Parameters<ReservationEventParam>,
     ) -> Result<CallToolResult, String> {
         let event_key = params.try_into_event_key()?;
-        to_call_tool_result(self.client().create_reservation(event_key).await)
+        let client = self.client();
+        to_call_tool_result(flows::create_reservation(&client, event_key).await)
     }
 
     #[tool(

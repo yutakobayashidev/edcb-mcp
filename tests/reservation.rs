@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use chrono::Timelike;
 use edcb_mcp::{
-    EdcbClient, EventKey, ProgramSearchQuery, ServiceKey, build_reservation_from_event,
+    EdcbClient, EventKey, ProgramSearchQuery, ServiceKey,
+    flows::{build_reservation_from_event, preview_reservation, search_programs},
     test_support::{
         encode_reserve_for_test, encode_service_event_list_for_test, read_request_frame_for_test,
         reserve_fixture_for_test, service_event_fixture_for_test,
@@ -139,8 +140,7 @@ async fn search_programs_filters_enum_pg_info_ex_results() {
     let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
     client.set_timeout(Duration::from_secs(1));
 
-    let programs = client
-        .search_programs(&query)
+    let programs = search_programs(&client, &query)
         .await
         .expect("program search should filter EPG events");
     let payload = server
@@ -172,14 +172,16 @@ async fn search_programs_without_service_uses_all_service_filter() {
     let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
     client.set_timeout(Duration::from_secs(1));
 
-    let programs = client
-        .search_programs(&ProgramSearchQuery {
+    let programs = search_programs(
+        &client,
+        &ProgramSearchQuery {
             keyword: "Program".to_string(),
             title_only: true,
             service: None,
-        })
-        .await
-        .expect("program search should support all-service search");
+        },
+    )
+    .await
+    .expect("program search should support all-service search");
     let payload = server
         .await
         .expect("mock EDCB server task should complete without panicking");
@@ -214,8 +216,7 @@ async fn preview_reservation_looks_up_event_with_service_and_time_filter() {
     let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
     client.set_timeout(Duration::from_secs(1));
 
-    let reserve = client
-        .preview_reservation(event_key)
+    let reserve = preview_reservation(&client, event_key)
         .await
         .expect("reservation preview should build from EPG event and default settings");
     let payloads = server

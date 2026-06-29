@@ -21,6 +21,13 @@ KonomiTV's async usage used as a secondary reference.
 - Utility parsers for `ChSet5.txt`, `LogoData.ini`, logo directory indexes, and
   program extended text
 
+## Architecture
+
+`EdcbClient` is a raw CtrlCmd client: its methods map closely to EDCB commands
+and wire data structures. Application-level operations live in `flows`, such as
+program search and event-based reservation preview/create. The CLI and MCP
+server call these flows instead of embedding CtrlCmd orchestration directly.
+
 ## To Do
 
 - [ ] Unix domain socket transport

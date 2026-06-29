@@ -5,7 +5,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::{
-    EdcbClient, EventKey, PluginKind, ProgramSearchQuery, ServiceKey,
+    EdcbClient, EventKey, PluginKind, ProgramSearchQuery, ServiceKey, flows,
     types::{
         EventInfo, NotifySrvInfo, RecFileInfo, ReserveData, ServiceInfo, TunerProcessStatusInfo,
         TunerReserveInfo,
@@ -348,15 +348,13 @@ pub async fn execute(invocation: CliInvocation) -> Result<String, CliError> {
             })
         }
         CliCommand::ProgramsSearch(query) => {
-            let value = client
-                .search_programs(&query)
+            let value = flows::search_programs(&client, &query)
                 .await
                 .map_err(runtime_error)?;
             render(&invocation.output, &value, || format_programs_plain(&value))
         }
         CliCommand::ReservePreview(event_key) => {
-            let value = client
-                .preview_reservation(event_key)
+            let value = flows::preview_reservation(&client, event_key)
                 .await
                 .map_err(runtime_error)?;
             render(&invocation.output, &value, || {
@@ -364,8 +362,7 @@ pub async fn execute(invocation: CliInvocation) -> Result<String, CliError> {
             })
         }
         CliCommand::ReserveCreate(event_key) => {
-            let value = client
-                .create_reservation(event_key)
+            let value = flows::create_reservation(&client, event_key)
                 .await
                 .map_err(runtime_error)?;
             render(&invocation.output, &value, || {
