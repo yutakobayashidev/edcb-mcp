@@ -1,6 +1,7 @@
 use chrono::{DateTime, FixedOffset};
+use serde::Serialize;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChSet5Item {
     pub service_name: String,
     pub network_name: String,
@@ -13,7 +14,7 @@ pub struct ChSet5Item {
     pub search_flag: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ServiceInfo {
     pub onid: u16,
     pub tsid: u16,
@@ -27,20 +28,20 @@ pub struct ServiceInfo {
     pub remote_control_key_id: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FileData {
     pub name: String,
     pub data: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RecFileSetInfo {
     pub rec_folder: String,
     pub write_plug_in: String,
     pub rec_name_plug_in: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RecSettingData {
     pub rec_mode: u8,
     pub priority: u8,
@@ -59,7 +60,7 @@ pub struct RecSettingData {
     pub partial_rec_folder: Vec<RecFileSetInfo>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ReserveData {
     pub title: String,
     pub start_time: DateTime<FixedOffset>,
@@ -77,7 +78,7 @@ pub struct ReserveData {
     pub rec_file_name_list: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RecFileInfo {
     pub id: i32,
     pub rec_file_path: String,
@@ -99,14 +100,14 @@ pub struct RecFileInfo {
     pub protect_flag: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TunerReserveInfo {
     pub tuner_id: u32,
     pub tuner_name: String,
     pub reserve_list: Vec<i32>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TunerProcessStatusInfo {
     pub tuner_id: u32,
     pub process_id: i32,
@@ -122,29 +123,29 @@ pub struct TunerProcessStatusInfo {
     pub extra_flags: u16,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ShortEventInfo {
     pub event_name: String,
     pub text_char: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExtendedEventInfo {
     pub text_char: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ContentData {
     pub content_nibble: u16,
     pub user_nibble: u16,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ContentInfo {
     pub nibble_list: Vec<ContentData>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ComponentInfo {
     pub stream_content: u8,
     pub component_type: u8,
@@ -152,7 +153,7 @@ pub struct ComponentInfo {
     pub text_char: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AudioComponentInfoData {
     pub stream_content: u8,
     pub component_type: u8,
@@ -166,12 +167,12 @@ pub struct AudioComponentInfoData {
     pub text_char: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AudioComponentInfo {
     pub component_list: Vec<AudioComponentInfoData>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EventData {
     pub onid: u16,
     pub tsid: u16,
@@ -179,13 +180,13 @@ pub struct EventData {
     pub eid: u16,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EventGroupInfo {
     pub group_type: u8,
     pub event_data_list: Vec<EventData>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct EventInfo {
     pub onid: u16,
     pub tsid: u16,
@@ -203,13 +204,13 @@ pub struct EventInfo {
     pub event_relay_info: Option<EventGroupInfo>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ServiceEventInfo {
     pub service_info: ServiceInfo,
     pub event_list: Vec<EventInfo>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct SearchDateInfo {
     pub start_day_of_week: u8,
     pub start_hour: u16,
@@ -219,7 +220,7 @@ pub struct SearchDateInfo {
     pub end_min: u16,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct SearchKeyInfo {
     pub and_key: String,
     pub not_key: String,
@@ -243,7 +244,7 @@ pub struct SearchKeyInfo {
     pub chk_duration_max: u16,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AutoAddData {
     pub data_id: i32,
     pub search_info: SearchKeyInfo,
@@ -251,7 +252,7 @@ pub struct AutoAddData {
     pub add_count: i32,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ManualAutoAddData {
     pub data_id: i32,
     pub day_of_week_flag: u8,
@@ -265,13 +266,13 @@ pub struct ManualAutoAddData {
     pub rec_setting: RecSettingData,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NwPlayTimeShiftInfo {
     pub ctrl_id: i32,
     pub file_path: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NotifySrvInfo {
     pub notify_id: u32,
     pub time: DateTime<FixedOffset>,

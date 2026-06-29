@@ -1,5 +1,6 @@
 pub mod client;
 pub mod error;
+pub mod mcp;
 #[doc(hidden)]
 pub mod test_support;
 pub mod types;
