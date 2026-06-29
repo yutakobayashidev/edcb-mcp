@@ -1,8 +1,10 @@
 use chrono::TimeZone;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use crate::codec::{Writer, jst, write_reserve_data, write_service_info};
-use crate::types::{EventInfo, RecSettingData, ReserveData, ServiceInfo, ShortEventInfo};
+use crate::codec::{Writer, jst, write_reserve_data, write_search_key_info, write_service_info};
+use crate::types::{
+    EventInfo, RecSettingData, ReserveData, SearchKeyInfo, ServiceInfo, ShortEventInfo,
+};
 
 #[doc(hidden)]
 pub fn encode_service_list_for_test() -> Vec<u8> {
@@ -85,6 +87,22 @@ pub fn encode_service_event_list_for_test(service: &ServiceInfo, event: &EventIn
             });
         });
     });
+    writer.into_inner()
+}
+
+#[doc(hidden)]
+pub fn encode_event_list_for_test(event: &EventInfo) -> Vec<u8> {
+    let mut writer = Writer::new();
+    writer.write_vector(std::slice::from_ref(event), |writer, event| {
+        write_event_info_for_test(writer, event)
+    });
+    writer.into_inner()
+}
+
+#[doc(hidden)]
+pub fn encode_search_keys_for_test(keys: &[SearchKeyInfo]) -> Vec<u8> {
+    let mut writer = Writer::new();
+    writer.write_vector(keys, write_search_key_info);
     writer.into_inner()
 }
 

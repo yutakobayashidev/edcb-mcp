@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crate::{
-    EdcbClient, EventKey, PluginKind, ProgramSearchQuery, RecordSettingsPatch, ServiceKey, flows,
+    BroadcastType, EdcbClient, EventKey, PluginKind, ProgramSearchQuery, RecordSettingsPatch,
+    SearchDateInfo, ServiceKey, flows,
 };
 use rmcp::{
     ServerHandler,
@@ -141,23 +142,111 @@ impl PluginKindParam {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SearchProgramsParam {
+    #[serde(default)]
     pub keyword: String,
     #[serde(default)]
-    pub title_only: bool,
-    pub service: Option<String>,
+    pub exclude_keyword: String,
+    #[serde(default)]
+    pub is_title_only: bool,
+    #[serde(default)]
+    pub is_case_sensitive: bool,
+    #[serde(default)]
+    pub is_fuzzy_search_enabled: bool,
+    #[serde(default)]
+    pub is_regex_search_enabled: bool,
+    pub service_ranges: Option<Vec<SearchProgramsServiceParam>>,
+    pub date_ranges: Option<Vec<SearchProgramsDateParam>>,
+    #[serde(default)]
+    pub is_exclude_date_ranges: bool,
+    pub duration_range_min: Option<u16>,
+    pub duration_range_max: Option<u16>,
+    #[serde(default)]
+    pub broadcast_type: BroadcastType,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SearchProgramsServiceParam {
+    pub network_id: u16,
+    pub transport_stream_id: u16,
+    pub service_id: u16,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SearchProgramsDateParam {
+    pub start_day_of_week: u8,
+    pub start_hour: u16,
+    pub start_minute: u16,
+    pub end_day_of_week: u8,
+    pub end_hour: u16,
+    pub end_minute: u16,
 }
 
 impl SearchProgramsParam {
-    fn try_into_query(&self) -> Result<ProgramSearchQuery, String> {
-        let service = self
-            .service
-            .as_deref()
-            .map(|value| value.parse::<ServiceKey>())
-            .transpose()?;
+    pub fn try_into_query(&self) -> Result<ProgramSearchQuery, String> {
+        let service_ranges = self.service_ranges.as_ref().map(|services| {
+            services
+                .iter()
+                .map(|service| ServiceKey {
+                    onid: service.network_id,
+                    tsid: service.transport_stream_id,
+                    sid: service.service_id,
+                })
+                .collect()
+        });
+        let date_ranges = self
+            .date_ranges
+            .as_ref()
+            .map(|ranges| {
+                ranges
+                    .iter()
+                    .map(|range| range.try_into_search_date())
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        if let (Some(min), Some(max)) = (self.duration_range_min, self.duration_range_max)
+            && min > max
+        {
+            return Err(
+                "program search duration_range_min must be less than or equal to duration_range_max"
+                    .to_string(),
+            );
+        }
         Ok(ProgramSearchQuery {
             keyword: self.keyword.clone(),
-            title_only: self.title_only,
-            service,
+            exclude_keyword: self.exclude_keyword.clone(),
+            title_only: self.is_title_only,
+            case_sensitive: self.is_case_sensitive,
+            regex: self.is_regex_search_enabled,
+            fuzzy: self.is_fuzzy_search_enabled,
+            service_ranges,
+            date_ranges,
+            exclude_date_ranges: self.is_exclude_date_ranges,
+            duration_min: self.duration_range_min,
+            duration_max: self.duration_range_max,
+            broadcast_type: self.broadcast_type,
+        })
+    }
+}
+
+impl SearchProgramsDateParam {
+    fn try_into_search_date(&self) -> Result<SearchDateInfo, String> {
+        if self.start_day_of_week > 6 || self.end_day_of_week > 6 {
+            return Err("date range day_of_week must be in 0..=6".to_string());
+        }
+        if self.start_hour > 23 || self.end_hour > 23 {
+            return Err("date range hour must be in 0..=23".to_string());
+        }
+        if self.start_minute > 59 || self.end_minute > 59 {
+            return Err("date range minute must be in 0..=59".to_string());
+        }
+        Ok(SearchDateInfo {
+            start_day_of_week: self.start_day_of_week,
+            start_hour: self.start_hour,
+            start_min: self.start_minute,
+            end_day_of_week: self.end_day_of_week,
+            end_hour: self.end_hour,
+            end_min: self.end_minute,
         })
     }
 }
@@ -254,7 +343,7 @@ impl EdcbMcpServer {
 
     #[tool(
         name = "search_programs",
-        description = "Search EDCB programs by keyword, optionally title-only or scoped to one service"
+        description = "Search EDCB programs with SearchKeyInfo-compatible conditions"
     )]
     pub async fn search_programs(
         &self,

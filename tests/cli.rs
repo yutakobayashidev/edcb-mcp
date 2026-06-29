@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use edcb_tools::{
-    EventKey, PluginKind, ProgramSearchQuery, RecordingMode, ServiceKey, ServiceRecordingMode,
+    BroadcastType, EventKey, PluginKind, ProgramSearchQuery, RecordingMode, SearchDateInfo,
+    ServiceKey, ServiceRecordingMode,
     cli::{CliAction, CliCommand, CliInvocation, OutputMode, format_services_plain},
     types::ServiceInfo,
 };
@@ -109,14 +110,94 @@ fn parses_program_search_command() {
             command: CliCommand::ProgramsSearch(ProgramSearchQuery {
                 keyword: "ニュース".to_string(),
                 title_only: true,
-                service: Some(ServiceKey {
+                service_ranges: Some(vec![ServiceKey {
                     onid: 32736,
                     tsid: 32736,
                     sid: 1024,
-                }),
+                }]),
+                ..ProgramSearchQuery::default()
             }),
         })
     );
+}
+
+#[test]
+fn parses_extended_program_search_conditions() {
+    let action = CliAction::from_args_and_env(
+        [
+            "edcb",
+            "programs",
+            "search",
+            "--keyword",
+            "ニュース",
+            "--exclude-keyword",
+            "スポーツ",
+            "--title-only",
+            "--case-sensitive",
+            "--regex",
+            "--fuzzy",
+            "--service",
+            "1:2:3",
+            "--date-range",
+            "1:19:00-1:23:00",
+            "--exclude-date-ranges",
+            "--duration-min",
+            "30",
+            "--duration-max",
+            "120",
+            "--free-ca",
+            "free",
+        ],
+        empty_env(),
+    )
+    .expect("extended program search command should parse");
+
+    assert_eq!(
+        action,
+        CliAction::Run(CliInvocation {
+            host: "127.0.0.1".to_string(),
+            port: 4510,
+            timeout: Duration::from_secs(15),
+            output: OutputMode::Human,
+            command: CliCommand::ProgramsSearch(ProgramSearchQuery {
+                keyword: "ニュース".to_string(),
+                exclude_keyword: "スポーツ".to_string(),
+                title_only: true,
+                case_sensitive: true,
+                regex: true,
+                fuzzy: true,
+                service_ranges: Some(vec![ServiceKey {
+                    onid: 1,
+                    tsid: 2,
+                    sid: 3,
+                }]),
+                date_ranges: vec![SearchDateInfo {
+                    start_day_of_week: 1,
+                    start_hour: 19,
+                    start_min: 0,
+                    end_day_of_week: 1,
+                    end_hour: 23,
+                    end_min: 0,
+                }],
+                exclude_date_ranges: true,
+                duration_min: Some(30),
+                duration_max: Some(120),
+                broadcast_type: BroadcastType::FreeOnly,
+            }),
+        })
+    );
+}
+
+#[test]
+fn rejects_invalid_program_search_date_range() {
+    let error = CliAction::from_args_and_env(
+        ["edcb", "programs", "search", "--date-range", "1:19-1:23"],
+        empty_env(),
+    )
+    .expect_err("malformed date range should fail");
+
+    assert_eq!(error.exit_code, 2);
+    assert!(error.message.contains("date range"));
 }
 
 #[test]

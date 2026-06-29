@@ -433,11 +433,44 @@ pub struct SearchKeyInfo {
     pub chk_duration_max: u16,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "PascalCase")]
+pub enum BroadcastType {
+    #[default]
+    All,
+    FreeOnly,
+    PaidOnly,
+}
+
+impl FromStr for BroadcastType {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match normalize_option(value).as_str() {
+            "all" => Ok(Self::All),
+            "free" | "freeonly" => Ok(Self::FreeOnly),
+            "paid" | "paidonly" => Ok(Self::PaidOnly),
+            _ => Err(format!(
+                "broadcast type must be all, free, free-only, paid, or paid-only: {value}"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct ProgramSearchQuery {
     pub keyword: String,
+    pub exclude_keyword: String,
     pub title_only: bool,
-    pub service: Option<ServiceKey>,
+    pub case_sensitive: bool,
+    pub regex: bool,
+    pub fuzzy: bool,
+    pub service_ranges: Option<Vec<ServiceKey>>,
+    pub date_ranges: Vec<SearchDateInfo>,
+    pub exclude_date_ranges: bool,
+    pub duration_min: Option<u16>,
+    pub duration_max: Option<u16>,
+    pub broadcast_type: BroadcastType,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

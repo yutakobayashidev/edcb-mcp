@@ -1,9 +1,9 @@
 use crate::client::EdcbClient;
 use crate::error::{EdcbError, Result};
 use crate::types::{
-    EventInfo, EventKey, PostRecordingMode, ProgramSearchQuery, RecFileSetInfo, RecSettingData,
-    RecordSettingsPatch, RecordingFolder, RecordingMode, ReserveData, ServiceInfo, ServiceKey,
-    ServiceRecordingMode,
+    BroadcastType, EventInfo, EventKey, PostRecordingMode, ProgramSearchQuery, RecFileSetInfo,
+    RecSettingData, RecordSettingsPatch, RecordingFolder, RecordingMode, ReserveData,
+    SearchDateInfo, SearchKeyInfo, ServiceInfo, ServiceKey, ServiceRecordingMode,
 };
 
 const EPG_SERVICE_ALL_MASK: i64 = 0x0000_ffff_ffff_ffff;
@@ -14,13 +14,98 @@ pub async fn search_programs(
     client: &EdcbClient,
     query: &ProgramSearchQuery,
 ) -> Result<Vec<EventInfo>> {
-    let service_events = client
-        .enum_pg_info_ex(&event_lookup_filter(query.service))
-        .await?;
-    Ok(service_events
+    let key = if query.service_ranges.is_none() {
+        let mut query = query.clone();
+        query.service_ranges = Some(default_search_services(client).await?);
+        program_search_query_to_search_key(&query)?
+    } else {
+        program_search_query_to_search_key(query)?
+    };
+    client.search_pg(&[key]).await
+}
+
+pub fn program_search_query_to_search_key(query: &ProgramSearchQuery) -> Result<SearchKeyInfo> {
+    validate_program_search_query(query)?;
+    Ok(SearchKeyInfo {
+        and_key: query.keyword.clone(),
+        not_key: query.exclude_keyword.clone(),
+        case_sensitive: query.case_sensitive,
+        reg_exp_flag: query.regex,
+        title_only_flag: query.title_only,
+        date_list: query.date_ranges.clone(),
+        service_list: query
+            .service_ranges
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .map(|service| service.to_search_id())
+            .collect(),
+        aimai_flag: query.fuzzy,
+        not_date_flag: query.exclude_date_ranges,
+        free_ca_flag: match query.broadcast_type {
+            BroadcastType::All => 0,
+            BroadcastType::FreeOnly => 1,
+            BroadcastType::PaidOnly => 2,
+        },
+        chk_duration_min: query.duration_min.unwrap_or_default(),
+        chk_duration_max: query.duration_max.unwrap_or_default(),
+        ..SearchKeyInfo::default()
+    })
+}
+
+fn validate_program_search_query(query: &ProgramSearchQuery) -> Result<()> {
+    if let (Some(min), Some(max)) = (query.duration_min, query.duration_max)
+        && min > max
+    {
+        return Err(EdcbError::InvalidInput(
+            "program search duration_min must be less than or equal to duration_max".to_string(),
+        ));
+    }
+    for value in [query.duration_min, query.duration_max]
         .into_iter()
-        .flat_map(|service| service.event_list)
-        .filter(|event| event_matches_query(event, query))
+        .flatten()
+    {
+        if value > 9999 {
+            return Err(EdcbError::InvalidInput(format!(
+                "program search duration must be in 0..=9999 minutes: {value}"
+            )));
+        }
+    }
+    for date in &query.date_ranges {
+        validate_search_date(date)?;
+    }
+    Ok(())
+}
+
+fn validate_search_date(date: &SearchDateInfo) -> Result<()> {
+    if date.start_day_of_week > 6 || date.end_day_of_week > 6 {
+        return Err(EdcbError::InvalidInput(
+            "program search date day_of_week must be in 0..=6".to_string(),
+        ));
+    }
+    if date.start_hour > 23 || date.end_hour > 23 {
+        return Err(EdcbError::InvalidInput(
+            "program search date hour must be in 0..=23".to_string(),
+        ));
+    }
+    if date.start_min > 59 || date.end_min > 59 {
+        return Err(EdcbError::InvalidInput(
+            "program search date minute must be in 0..=59".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+async fn default_search_services(client: &EdcbClient) -> Result<Vec<ServiceKey>> {
+    Ok(client
+        .enum_service()
+        .await?
+        .into_iter()
+        .map(|service| ServiceKey {
+            onid: service.onid,
+            tsid: service.tsid,
+            sid: service.sid,
+        })
         .collect())
 }
 
@@ -323,23 +408,4 @@ fn event_lookup_filter(service: Option<ServiceKey>) -> [i64; 4] {
         .map(|service| (0, service.to_search_id()))
         .unwrap_or((EPG_SERVICE_ALL_MASK, EPG_SERVICE_ALL_MASK));
     [mask, key, EPG_LOOKUP_TIME_BEGIN, EPG_LOOKUP_TIME_END]
-}
-
-fn event_matches_query(event: &EventInfo, query: &ProgramSearchQuery) -> bool {
-    if query.keyword.is_empty() {
-        return true;
-    }
-    let title_match = event
-        .short_info
-        .as_ref()
-        .is_some_and(|info| info.event_name.contains(&query.keyword));
-    let detail_match = event
-        .short_info
-        .as_ref()
-        .is_some_and(|info| info.text_char.contains(&query.keyword))
-        || event
-            .ext_info
-            .as_ref()
-            .is_some_and(|info| info.text_char.contains(&query.keyword));
-    title_match || (!query.title_only && detail_match)
 }

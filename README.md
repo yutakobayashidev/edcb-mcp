@@ -140,7 +140,7 @@ Available commands:
 - `reserves`
 - `recorded list`
 - `recorded get <info-id>`
-- `programs search --keyword <text> [--title-only] [--service <onid:tsid:sid>]`
+- `programs search [search options]`
 - `reserves get <reserve-id>`
 - `reserves preview --event <onid:tsid:sid:eid> [recording options]`
 - `reserves create --event <onid:tsid:sid:eid> [recording options] --yes`
@@ -162,6 +162,32 @@ updated reservation data.
 delete command and returns the deleted reservation data.
 `programs search` prints event keys as `onid:tsid:sid:eid`, which can be passed
 to `reserves preview` or `reserves create`.
+
+Program search uses EDCB's `SearchKeyInfo`/`SearchPg` semantics. Date ranges are
+recurring weekday/time-of-day ranges, not absolute datetimes. If no service is
+specified, the CLI first fetches EDCB's service list and searches those services.
+
+Program search options:
+
+- `--keyword <text>`
+- `--exclude-keyword <text>`
+- `--title-only`
+- `--case-sensitive`
+- `--regex`
+- `--fuzzy`
+- `--service <onid:tsid:sid>` (repeatable)
+- `--date-range <start-dow:HH:MM-end-dow:HH:MM>` (repeatable, `0` is Sunday)
+- `--exclude-date-ranges`
+- `--duration-min <minutes>` and `--duration-max <minutes>`
+- `--free-ca <all|free|paid>`
+
+Examples:
+
+```sh
+edcb programs search --keyword news --title-only
+edcb programs search --keyword news --date-range 1:19:00-1:23:00
+edcb programs search --keyword news --duration-min 30 --duration-max 120 --free-ca free
+```
 
 Common recording options:
 
@@ -231,6 +257,40 @@ names:
 `update_reservation` accepts `reserve_id` and required `options`.
 `delete_reservation` fetches the reservation before deleting it and returns the
 deleted reservation data.
+
+`search_programs` accepts KonomiTV-style search condition fields:
+
+```json
+{
+  "keyword": "news",
+  "exclude_keyword": "sports",
+  "is_title_only": true,
+  "is_case_sensitive": false,
+  "is_fuzzy_search_enabled": true,
+  "is_regex_search_enabled": false,
+  "service_ranges": [
+    {
+      "network_id": 32736,
+      "transport_stream_id": 32736,
+      "service_id": 1024
+    }
+  ],
+  "date_ranges": [
+    {
+      "start_day_of_week": 1,
+      "start_hour": 19,
+      "start_minute": 0,
+      "end_day_of_week": 1,
+      "end_hour": 23,
+      "end_minute": 0
+    }
+  ],
+  "is_exclude_date_ranges": false,
+  "duration_range_min": 30,
+  "duration_range_max": 120,
+  "broadcast_type": "FreeOnly"
+}
+```
 
 ## Development
 

@@ -1,7 +1,13 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use edcb_tools::mcp::{EdcbMcpServer, PluginKindParam, ServerConfig};
+use edcb_tools::{
+    BroadcastType, ProgramSearchQuery, SearchDateInfo, ServiceKey,
+    mcp::{
+        EdcbMcpServer, PluginKindParam, SearchProgramsDateParam, SearchProgramsParam,
+        SearchProgramsServiceParam, ServerConfig,
+    },
+};
 use rmcp::ServiceExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -129,6 +135,95 @@ fn plugin_kind_param_parses_supported_values() {
         .try_into_plugin_kind()
         .is_err()
     );
+}
+
+#[test]
+fn search_programs_param_parses_extended_conditions() {
+    let query = SearchProgramsParam {
+        keyword: "ニュース".to_string(),
+        exclude_keyword: "スポーツ".to_string(),
+        is_title_only: true,
+        is_case_sensitive: true,
+        is_fuzzy_search_enabled: true,
+        is_regex_search_enabled: true,
+        service_ranges: Some(vec![SearchProgramsServiceParam {
+            network_id: 1,
+            transport_stream_id: 2,
+            service_id: 3,
+        }]),
+        date_ranges: Some(vec![SearchProgramsDateParam {
+            start_day_of_week: 1,
+            start_hour: 19,
+            start_minute: 0,
+            end_day_of_week: 1,
+            end_hour: 23,
+            end_minute: 0,
+        }]),
+        is_exclude_date_ranges: true,
+        duration_range_min: Some(30),
+        duration_range_max: Some(120),
+        broadcast_type: BroadcastType::FreeOnly,
+    }
+    .try_into_query()
+    .expect("MCP program search params should map to query");
+
+    assert_eq!(
+        query,
+        ProgramSearchQuery {
+            keyword: "ニュース".to_string(),
+            exclude_keyword: "スポーツ".to_string(),
+            title_only: true,
+            case_sensitive: true,
+            regex: true,
+            fuzzy: true,
+            service_ranges: Some(vec![ServiceKey {
+                onid: 1,
+                tsid: 2,
+                sid: 3,
+            }]),
+            date_ranges: vec![SearchDateInfo {
+                start_day_of_week: 1,
+                start_hour: 19,
+                start_min: 0,
+                end_day_of_week: 1,
+                end_hour: 23,
+                end_min: 0,
+            }],
+            exclude_date_ranges: true,
+            duration_min: Some(30),
+            duration_max: Some(120),
+            broadcast_type: BroadcastType::FreeOnly,
+        }
+    );
+}
+
+#[test]
+fn search_programs_param_rejects_invalid_date_ranges() {
+    let error = SearchProgramsParam {
+        keyword: String::new(),
+        exclude_keyword: String::new(),
+        is_title_only: false,
+        is_case_sensitive: false,
+        is_fuzzy_search_enabled: false,
+        is_regex_search_enabled: false,
+        service_ranges: None,
+        date_ranges: Some(vec![SearchProgramsDateParam {
+            start_day_of_week: 7,
+            start_hour: 19,
+            start_minute: 0,
+            end_day_of_week: 1,
+            end_hour: 23,
+            end_minute: 0,
+        }]),
+        is_exclude_date_ranges: false,
+        duration_range_min: None,
+        duration_range_max: None,
+        broadcast_type: BroadcastType::All,
+    }
+    .try_into_query()
+    .expect_err("invalid MCP date range should fail");
+
+    assert!(error.contains("date range"));
 }
 
 #[test]

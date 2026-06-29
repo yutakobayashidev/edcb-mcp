@@ -5,8 +5,8 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::{
-    EdcbClient, EventKey, PluginKind, PostRecordingMode, ProgramSearchQuery, RecordSettingsPatch,
-    RecordingMode, ServiceKey, ServiceRecordingMode, flows,
+    BroadcastType, EdcbClient, EventKey, PluginKind, PostRecordingMode, ProgramSearchQuery,
+    RecordSettingsPatch, RecordingMode, SearchDateInfo, ServiceKey, ServiceRecordingMode, flows,
     types::{
         EventInfo, NotifySrvInfo, RecFileInfo, ReserveData, ServiceInfo, TunerProcessStatusInfo,
         TunerReserveInfo,
@@ -178,7 +178,8 @@ where
             }
             "--json" => invocation.output = OutputMode::Json,
             "--plain" => invocation.output = OutputMode::Plain,
-            "--keyword" | "--service" | "--event" | "--priority" | "--recording-mode"
+            "--keyword" | "--exclude-keyword" | "--service" | "--date-range" | "--duration-min"
+            | "--duration-max" | "--free-ca" | "--event" | "--priority" | "--recording-mode"
             | "--start-margin" | "--end-margin" | "--caption" | "--data" | "--post-recording" => {
                 let key = args[index].clone();
                 index += 1;
@@ -188,9 +189,14 @@ where
                 positionals.push(key);
                 positionals.push(value.clone());
             }
-            "--title-only" | "--yes" | "--enable" | "--disable" => {
-                positionals.push(args[index].clone())
-            }
+            "--title-only"
+            | "--case-sensitive"
+            | "--regex"
+            | "--fuzzy"
+            | "--exclude-date-ranges"
+            | "--yes"
+            | "--enable"
+            | "--disable" => positionals.push(args[index].clone()),
             value if value.starts_with('-') => {
                 return Err(CliError::invalid_usage(format!("unknown argument {value}")));
             }
@@ -279,26 +285,61 @@ fn parse_command(positionals: &[String]) -> Result<CliCommand, CliError> {
 }
 
 fn parse_program_search(args: &[String]) -> Result<ProgramSearchQuery, CliError> {
-    let mut keyword = None;
-    let mut title_only = false;
-    let mut service = None;
+    let mut query = ProgramSearchQuery::default();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
             "--keyword" => {
                 index += 1;
-                keyword = Some(
-                    args.get(index)
-                        .ok_or_else(|| CliError::invalid_usage("--keyword requires a value"))?
-                        .clone(),
-                );
+                query.keyword = args
+                    .get(index)
+                    .ok_or_else(|| CliError::invalid_usage("--keyword requires a value"))?
+                    .clone();
             }
-            "--title-only" => title_only = true,
+            "--exclude-keyword" => {
+                index += 1;
+                query.exclude_keyword = args
+                    .get(index)
+                    .ok_or_else(|| CliError::invalid_usage("--exclude-keyword requires a value"))?
+                    .clone();
+            }
+            "--title-only" => query.title_only = true,
+            "--case-sensitive" => query.case_sensitive = true,
+            "--regex" => query.regex = true,
+            "--fuzzy" => query.fuzzy = true,
             "--service" => {
                 index += 1;
-                service = Some(parse_service_key(args.get(index).ok_or_else(|| {
-                    CliError::invalid_usage("--service requires onid:tsid:sid")
-                })?)?);
+                query
+                    .service_ranges
+                    .get_or_insert_with(Vec::new)
+                    .push(parse_service_key(args.get(index).ok_or_else(|| {
+                        CliError::invalid_usage("--service requires onid:tsid:sid")
+                    })?)?);
+            }
+            "--date-range" => {
+                index += 1;
+                query
+                    .date_ranges
+                    .push(parse_search_date_range(args.get(index).ok_or_else(
+                        || {
+                            CliError::invalid_usage(
+                                "--date-range requires start-dow:HH:MM-end-dow:HH:MM",
+                            )
+                        },
+                    )?)?);
+            }
+            "--exclude-date-ranges" => query.exclude_date_ranges = true,
+            "--duration-min" => {
+                index += 1;
+                query.duration_min = Some(parse_u16_arg(args.get(index), "--duration-min")?);
+            }
+            "--duration-max" => {
+                index += 1;
+                query.duration_max = Some(parse_u16_arg(args.get(index), "--duration-max")?);
+            }
+            "--free-ca" => {
+                index += 1;
+                query.broadcast_type = parse_broadcast_type_arg(args.get(index), "--free-ca")?;
             }
             value => {
                 return Err(CliError::invalid_usage(format!(
@@ -308,13 +349,7 @@ fn parse_program_search(args: &[String]) -> Result<ProgramSearchQuery, CliError>
         }
         index += 1;
     }
-    let keyword = keyword
-        .ok_or_else(|| CliError::invalid_usage("programs search requires --keyword <text>"))?;
-    Ok(ProgramSearchQuery {
-        keyword,
-        title_only,
-        service,
-    })
+    Ok(query)
 }
 
 fn parse_event_and_options(args: &[String]) -> Result<(EventKey, RecordSettingsPatch), CliError> {
@@ -429,11 +464,72 @@ fn parse_u8_arg(value: Option<&String>, name: &str) -> Result<u8, CliError> {
         .map_err(|_| CliError::invalid_usage(format!("{name} must be a number")))
 }
 
+fn parse_u16_arg(value: Option<&String>, name: &str) -> Result<u16, CliError> {
+    value
+        .ok_or_else(|| CliError::invalid_usage(format!("{name} requires a value")))?
+        .parse()
+        .map_err(|_| CliError::invalid_usage(format!("{name} must be a number")))
+}
+
 fn parse_i32_arg(value: Option<&String>, name: &str) -> Result<i32, CliError> {
     value
         .ok_or_else(|| CliError::invalid_usage(format!("{name} requires a value")))?
         .parse()
         .map_err(|_| CliError::invalid_usage(format!("{name} must be an integer")))
+}
+
+fn parse_broadcast_type_arg(value: Option<&String>, name: &str) -> Result<BroadcastType, CliError> {
+    value
+        .ok_or_else(|| CliError::invalid_usage(format!("{name} requires a value")))?
+        .parse()
+        .map_err(CliError::invalid_usage)
+}
+
+fn parse_search_date_range(value: &str) -> Result<SearchDateInfo, CliError> {
+    let (start, end) = value.split_once('-').ok_or_else(|| {
+        CliError::invalid_usage(format!(
+            "date range must be start-dow:HH:MM-end-dow:HH:MM: {value}"
+        ))
+    })?;
+    let (start_day_of_week, start_hour, start_min) = parse_search_date_endpoint(start, value)?;
+    let (end_day_of_week, end_hour, end_min) = parse_search_date_endpoint(end, value)?;
+    Ok(SearchDateInfo {
+        start_day_of_week,
+        start_hour,
+        start_min,
+        end_day_of_week,
+        end_hour,
+        end_min,
+    })
+}
+
+fn parse_search_date_endpoint(value: &str, source: &str) -> Result<(u8, u16, u16), CliError> {
+    let mut parts = value.split(':');
+    let day = parts
+        .next()
+        .ok_or_else(|| invalid_search_date_range(source))?
+        .parse::<u8>()
+        .map_err(|_| invalid_search_date_range(source))?;
+    let hour = parts
+        .next()
+        .ok_or_else(|| invalid_search_date_range(source))?
+        .parse::<u16>()
+        .map_err(|_| invalid_search_date_range(source))?;
+    let minute = parts
+        .next()
+        .ok_or_else(|| invalid_search_date_range(source))?
+        .parse::<u16>()
+        .map_err(|_| invalid_search_date_range(source))?;
+    if parts.next().is_some() || day > 6 || hour > 23 || minute > 59 {
+        return Err(invalid_search_date_range(source));
+    }
+    Ok((day, hour, minute))
+}
+
+fn invalid_search_date_range(value: &str) -> CliError {
+    CliError::invalid_usage(format!(
+        "date range must be start-dow:HH:MM-end-dow:HH:MM with day 0..=6, hour 0..=23, and minute 0..=59: {value}"
+    ))
 }
 
 fn parse_recording_mode_arg(value: Option<&String>, name: &str) -> Result<RecordingMode, CliError> {
@@ -747,7 +843,7 @@ pub fn help_text() -> &'static str {
 USAGE:
   edcb [global flags] <command>
   edcb [global flags] recorded get <info-id>
-  edcb [global flags] programs search --keyword <text>
+  edcb [global flags] programs search [search options]
   edcb [global flags] reserves create --event <onid:tsid:sid:eid> [recording options] --yes
   edcb [global flags] reserves update <reserve-id> [recording options] --yes
   edcb [global flags] reserves delete <reserve-id> --yes
@@ -758,7 +854,7 @@ COMMANDS:
   reserves
   recorded list
   recorded get <info-id>
-  programs search --keyword <text> [--title-only] [--service <onid:tsid:sid>]
+  programs search [search options]
   reserves get <reserve-id>
   reserves preview --event <onid:tsid:sid:eid> [recording options]
   reserves create --event <onid:tsid:sid:eid> [recording options] --yes
@@ -778,6 +874,20 @@ GLOBAL FLAGS:
       --json                 Print pretty JSON
       --plain                Print stable line-based output
 
+PROGRAM SEARCH OPTIONS:
+      --keyword <text>
+      --exclude-keyword <text>
+      --title-only
+      --case-sensitive
+      --regex
+      --fuzzy
+      --service <onid:tsid:sid>                     Repeatable
+      --date-range <start-dow:HH:MM-end-dow:HH:MM> Repeatable; 0 is Sunday
+      --exclude-date-ranges
+      --duration-min <minutes>
+      --duration-max <minutes>
+      --free-ca <all|free|paid>
+
 RECORDING OPTIONS:
       --priority <1-5>
       --enable | --disable
@@ -793,6 +903,8 @@ EXAMPLES:
   edcb recorded list
   edcb recorded get 1 --json
   edcb programs search --keyword ニュース --title-only
+  edcb programs search --keyword ニュース --date-range 1:19:00-1:23:00
+  edcb programs search --keyword ニュース --duration-min 30 --duration-max 120 --free-ca free
   edcb reserves get 1 --json
   edcb reserves preview --event 32736:32736:1024:4208
   edcb reserves create --event 32736:32736:1024:4208 --priority 4 --yes

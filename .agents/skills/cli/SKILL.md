@@ -22,7 +22,7 @@ nix run .#edcb -- --host 127.0.0.1 --port 4510 services
 Use GitHub flake apps for installed/distributed usage:
 
 ```sh
-nix run github:yutakobayashidev/edcb-mcp#edcb -- --host 127.0.0.1 services
+nix run github:yutakobayashidev/edcb-tools#edcb -- --host 127.0.0.1 services
 ```
 
 Use Cargo only for development:
@@ -49,10 +49,12 @@ CLI flags take precedence over environment variables.
 - Get one reservation: `edcb reserves get <reserve-id>`
 - List recorded items: `edcb recorded list`
 - Get one recorded item: `edcb recorded get <info-id>`
-- Search programs: `edcb programs search --keyword <text>`
+- Search programs: `edcb programs search [search options]`
 - Search program titles only: `edcb programs search --keyword <text> --title-only`
 - Search within one service:
   `edcb programs search --keyword <text> --service <onid:tsid:sid>`
+- Search by EDCB recurring weekday/time range:
+  `edcb programs search --keyword <text> --date-range <start-dow:HH:MM-end-dow:HH:MM>`
 - List tuner reservations: `edcb tuner-reserves`
 - List tuner processes: `edcb tuner-processes`
 - List plugins: `edcb plugins <write|rec_name>`
@@ -63,6 +65,23 @@ Use `--json` when the caller needs structured data:
 ```sh
 edcb --json programs search --keyword news --title-only
 ```
+
+Program search options use EDCB `SearchKeyInfo`/`SearchPg` semantics:
+
+- `--keyword <text>`
+- `--exclude-keyword <text>`
+- `--title-only`
+- `--case-sensitive`
+- `--regex`
+- `--fuzzy`
+- `--service <onid:tsid:sid>` (repeatable)
+- `--date-range <start-dow:HH:MM-end-dow:HH:MM>` (repeatable, `0` is Sunday)
+- `--exclude-date-ranges`
+- `--duration-min <minutes>` and `--duration-max <minutes>`
+- `--free-ca <all|free|paid>`
+
+Do not invent `--from` or `--to` for program search. EDCB/KonomiTV date ranges
+are recurring weekday/time-of-day ranges, not absolute datetimes.
 
 ## Reservation Commands
 

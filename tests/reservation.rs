@@ -4,15 +4,18 @@ use std::time::Duration;
 
 use chrono::Timelike;
 use edcb_tools::{
-    EdcbClient, EventKey, PostRecordingMode, ProgramSearchQuery, RecordSettingsPatch,
-    RecordingFolder, RecordingMode, ServiceKey, ServiceRecordingMode,
+    BroadcastType, EdcbClient, EventKey, PostRecordingMode, ProgramSearchQuery,
+    RecordSettingsPatch, RecordingFolder, RecordingMode, SearchDateInfo, SearchKeyInfo, ServiceKey,
+    ServiceRecordingMode,
     flows::{
         apply_record_settings_patch, build_reservation_from_event, create_reservation_with_options,
-        delete_reservation, preview_reservation, search_programs, update_reservation,
+        delete_reservation, preview_reservation, program_search_query_to_search_key,
+        search_programs, update_reservation,
     },
     test_support::{
-        encode_reserve_for_test, encode_service_event_list_for_test, read_request_frame_for_test,
-        reserve_fixture_for_test, service_event_fixture_for_test,
+        encode_event_list_for_test, encode_reserve_for_test, encode_search_keys_for_test,
+        encode_service_event_list_for_test, read_request_frame_for_test, reserve_fixture_for_test,
+        service_event_fixture_for_test,
     },
 };
 use tokio::io::AsyncWriteExt;
@@ -252,52 +255,156 @@ fn rejects_invalid_record_settings_patch_values() {
 }
 
 #[tokio::test]
-async fn search_programs_filters_enum_pg_info_ex_results() {
+async fn search_pg_sends_search_key_info_and_decodes_events() {
     let (service, event) = service_event_fixture_for_test();
-    let query = ProgramSearchQuery {
-        keyword: "Program".to_string(),
-        title_only: true,
-        service: Some(ServiceKey {
-            onid: service.onid,
-            tsid: service.tsid,
-            sid: service.sid,
-        }),
+    let key = SearchKeyInfo {
+        and_key: "Program".to_string(),
+        not_key: "Sports".to_string(),
+        title_only_flag: true,
+        case_sensitive: true,
+        reg_exp_flag: true,
+        aimai_flag: true,
+        service_list: vec![
+            ServiceKey {
+                onid: service.onid,
+                tsid: service.tsid,
+                sid: service.sid,
+            }
+            .to_search_id(),
+        ],
+        date_list: vec![SearchDateInfo {
+            start_day_of_week: 1,
+            start_hour: 19,
+            start_min: 0,
+            end_day_of_week: 1,
+            end_hour: 23,
+            end_min: 0,
+        }],
+        not_date_flag: true,
+        free_ca_flag: 1,
+        chk_duration_min: 30,
+        chk_duration_max: 120,
+        ..SearchKeyInfo::default()
     };
     let (addr, server) =
-        spawn_single_command_server(1029, encode_service_event_list_for_test(&service, &event))
-            .await;
+        spawn_single_command_server(1025, encode_event_list_for_test(&event)).await;
     let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
     client.set_timeout(Duration::from_secs(1));
 
-    let programs = search_programs(&client, &query)
+    let programs = client
+        .search_pg(std::slice::from_ref(&key))
         .await
-        .expect("program search should filter EPG events");
+        .expect("SearchPg should decode event list");
     let payload = server
         .await
         .expect("mock EDCB server task should complete without panicking");
 
     assert_eq!(programs.len(), 1);
     assert_eq!(programs[0].eid, event.eid);
-    assert_eq!(read_i32_at(&payload, 0), 40);
-    assert_eq!(read_i32_at(&payload, 4), 4);
-    assert_eq!(read_i64_at(&payload, 8), 0);
-    assert_eq!(
-        read_i64_at(&payload, 16),
-        query
-            .service
-            .expect("test query has service")
-            .to_search_id()
-    );
-    assert_eq!(read_i64_at(&payload, 24), 1);
-    assert_eq!(read_i64_at(&payload, 32), i64::MAX);
+    assert_eq!(payload, encode_search_keys_for_test(&[key]));
+}
+
+#[test]
+fn program_search_query_maps_to_search_key_info() {
+    let service = ServiceKey {
+        onid: 1,
+        tsid: 2,
+        sid: 3,
+    };
+    let query = ProgramSearchQuery {
+        keyword: "Program".to_string(),
+        exclude_keyword: "Sports".to_string(),
+        title_only: true,
+        case_sensitive: true,
+        regex: true,
+        fuzzy: true,
+        service_ranges: Some(vec![service]),
+        date_ranges: vec![SearchDateInfo {
+            start_day_of_week: 1,
+            start_hour: 19,
+            start_min: 0,
+            end_day_of_week: 1,
+            end_hour: 23,
+            end_min: 0,
+        }],
+        exclude_date_ranges: true,
+        duration_min: Some(30),
+        duration_max: Some(120),
+        broadcast_type: BroadcastType::FreeOnly,
+    };
+
+    let key = program_search_query_to_search_key(&query)
+        .expect("valid program search query should map to SearchKeyInfo");
+
+    assert_eq!(key.and_key, "Program");
+    assert_eq!(key.not_key, "Sports");
+    assert!(key.title_only_flag);
+    assert!(key.case_sensitive);
+    assert!(key.reg_exp_flag);
+    assert!(key.aimai_flag);
+    assert_eq!(key.service_list, vec![service.to_search_id()]);
+    assert_eq!(key.date_list, query.date_ranges);
+    assert!(key.not_date_flag);
+    assert_eq!(key.chk_duration_min, 30);
+    assert_eq!(key.chk_duration_max, 120);
+    assert_eq!(key.free_ca_flag, 1);
+}
+
+#[test]
+fn program_search_query_rejects_invalid_duration_range() {
+    let error = program_search_query_to_search_key(&ProgramSearchQuery {
+        duration_min: Some(120),
+        duration_max: Some(30),
+        ..ProgramSearchQuery::default()
+    })
+    .expect_err("reversed duration range should fail");
+
+    assert!(error.to_string().contains("duration_min"));
 }
 
 #[tokio::test]
-async fn search_programs_without_service_uses_all_service_filter() {
+async fn search_programs_uses_search_pg_for_specific_service() {
     let (service, event) = service_event_fixture_for_test();
+    let service_key = ServiceKey {
+        onid: service.onid,
+        tsid: service.tsid,
+        sid: service.sid,
+    };
+    let query = ProgramSearchQuery {
+        keyword: "Program".to_string(),
+        title_only: true,
+        service_ranges: Some(vec![service_key]),
+        ..ProgramSearchQuery::default()
+    };
     let (addr, server) =
-        spawn_single_command_server(1029, encode_service_event_list_for_test(&service, &event))
-            .await;
+        spawn_single_command_server(1025, encode_event_list_for_test(&event)).await;
+    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
+    client.set_timeout(Duration::from_secs(1));
+
+    let programs = search_programs(&client, &query)
+        .await
+        .expect("program search should use SearchPg");
+    let payload = server
+        .await
+        .expect("mock EDCB server task should complete without panicking");
+    let expected_key =
+        program_search_query_to_search_key(&query).expect("test query should map to SearchKeyInfo");
+
+    assert_eq!(programs.len(), 1);
+    assert_eq!(programs[0].eid, event.eid);
+    assert_eq!(payload, encode_search_keys_for_test(&[expected_key]));
+}
+
+#[tokio::test]
+async fn search_programs_without_service_uses_enum_service_defaults() {
+    let (service, event) = service_event_fixture_for_test();
+    let (addr, server) = spawn_two_command_server(
+        1021,
+        edcb_tools::test_support::encode_service_list_for_test(),
+        1025,
+        encode_event_list_for_test(&event),
+    )
+    .await;
     let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
     client.set_timeout(Duration::from_secs(1));
 
@@ -306,22 +413,28 @@ async fn search_programs_without_service_uses_all_service_filter() {
         &ProgramSearchQuery {
             keyword: "Program".to_string(),
             title_only: true,
-            service: None,
+            ..ProgramSearchQuery::default()
         },
     )
     .await
-    .expect("program search should support all-service search");
-    let payload = server
+    .expect("program search should populate default service ranges");
+    let payloads = server
         .await
         .expect("mock EDCB server task should complete without panicking");
+    let expected_key = program_search_query_to_search_key(&ProgramSearchQuery {
+        keyword: "Program".to_string(),
+        title_only: true,
+        service_ranges: Some(vec![ServiceKey {
+            onid: service.onid,
+            tsid: service.tsid,
+            sid: service.sid,
+        }]),
+        ..ProgramSearchQuery::default()
+    })
+    .expect("test query should map to SearchKeyInfo");
 
     assert_eq!(programs.len(), 1);
-    assert_eq!(read_i32_at(&payload, 0), 40);
-    assert_eq!(read_i32_at(&payload, 4), 4);
-    assert_eq!(read_i64_at(&payload, 8), 0x0000_ffff_ffff_ffff);
-    assert_eq!(read_i64_at(&payload, 16), 0x0000_ffff_ffff_ffff);
-    assert_eq!(read_i64_at(&payload, 24), 1);
-    assert_eq!(read_i64_at(&payload, 32), i64::MAX);
+    assert_eq!(payloads[1], encode_search_keys_for_test(&[expected_key]));
 }
 
 #[tokio::test]
