@@ -7,9 +7,10 @@ use clap::{Args, Parser, Subcommand, error::ErrorKind, value_parser};
 use serde::Serialize;
 
 use crate::{
-    BroadcastType, ChannelType, DuplicateTitleCheckScope, EdcbClient, EventKey, PluginKind,
-    PostRecordingMode, ProgramGenreRange, ProgramSearchQuery, RecordSettingsPatch, RecordingMode,
-    SearchDateInfo, ServiceKey, ServiceRecordingMode, TimeTable, TimeTableQuery, flows,
+    BroadcastType, ChannelType, ConnectionConfig, DuplicateTitleCheckScope, EdcbClient, EventKey,
+    PluginKind, PostRecordingMode, ProgramGenreRange, ProgramSearchQuery, RecordSettingsPatch,
+    RecordingMode, SearchDateInfo, ServiceKey, ServiceRecordingMode, TimeTable, TimeTableQuery,
+    flows,
     types::{
         EventInfo, NotifySrvInfo, RecFileInfo, ReservationCondition, ReserveData, ServiceInfo,
         TunerProcessStatusInfo, TunerReserveInfo,
@@ -89,9 +90,7 @@ pub enum CliCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliInvocation {
-    pub host: String,
-    pub port: u16,
-    pub timeout: Duration,
+    pub connection: ConnectionConfig,
     pub output: OutputMode,
     pub command: CliCommand,
 }
@@ -268,9 +267,11 @@ impl RawCli {
         };
 
         Ok(CliInvocation {
-            host,
-            port,
-            timeout,
+            connection: ConnectionConfig {
+                host,
+                port,
+                timeout,
+            },
             output,
             command: self.command.try_into_command()?,
         })
@@ -873,8 +874,7 @@ fn parse_timeout(value: &str) -> Result<u64, CliError> {
 }
 
 pub async fn execute(invocation: CliInvocation) -> Result<String, CliError> {
-    let mut client = EdcbClient::new(invocation.host.clone(), invocation.port);
-    client.set_timeout(invocation.timeout);
+    let client = EdcbClient::new(invocation.connection.clone());
 
     match invocation.command {
         CliCommand::Services => {

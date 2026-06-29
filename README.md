@@ -92,12 +92,13 @@ server call these flows instead of embedding CtrlCmd orchestration directly.
 ```rust
 use std::time::Duration;
 
-use edcb_tools::EdcbClient;
+use edcb_tools::{ConnectionConfig, EdcbClient};
 
 #[tokio::main]
 async fn main() -> edcb_tools::Result<()> {
-    let mut client = EdcbClient::new("127.0.0.1", 4510);
-    client.set_timeout(Duration::from_secs(5));
+    let client = EdcbClient::new(
+        ConnectionConfig::new("127.0.0.1", 4510).with_timeout(Duration::from_secs(5)),
+    );
 
     let services = client.enum_service().await?;
     for service in services {

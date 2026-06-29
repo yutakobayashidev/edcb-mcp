@@ -2,7 +2,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use edcb_tools::{EdcbClient, EdcbError};
+use edcb_tools::{ConnectionConfig, EdcbClient, EdcbError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -71,12 +71,15 @@ async fn spawn_single_response_server(
     (addr, handle)
 }
 
+fn test_client(addr: SocketAddr, timeout: Duration) -> EdcbClient {
+    EdcbClient::new(ConnectionConfig::new(addr.ip().to_string(), addr.port()).with_timeout(timeout))
+}
+
 #[tokio::test]
 async fn enum_service_sends_command_and_decodes_response() {
     let response_body = edcb_tools::test_support::encode_service_list_for_test();
     let (addr, server) = spawn_single_response_server(1, response_body).await;
-    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
-    client.set_timeout(Duration::from_secs(1));
+    let client = test_client(addr, Duration::from_secs(1));
 
     let services = client.enum_service().await.unwrap();
     server
@@ -92,8 +95,7 @@ async fn enum_service_sends_command_and_decodes_response() {
 #[tokio::test]
 async fn command_status_failure_is_reported() {
     let (addr, server) = spawn_single_response_server(203, Vec::new()).await;
-    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
-    client.set_timeout(Duration::from_secs(1));
+    let client = test_client(addr, Duration::from_secs(1));
 
     let error = client.enum_service().await.unwrap_err();
     server
@@ -109,8 +111,7 @@ async fn io_failures_are_reported() {
     let addr = listener.local_addr().unwrap();
     drop(listener);
 
-    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
-    client.set_timeout(Duration::from_millis(50));
+    let client = test_client(addr, Duration::from_millis(50));
 
     let error = client.enum_service().await.unwrap_err();
 

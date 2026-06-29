@@ -2,9 +2,9 @@ use std::time::Duration;
 
 use chrono::DateTime;
 use edcb_tools::{
-    BroadcastType, ChannelType, DuplicateTitleCheckScope, EventKey, PluginKind, ProgramGenreRange,
-    ProgramSearchQuery, RecordingMode, SearchDateInfo, ServiceKey, ServiceRecordingMode,
-    TimeTableQuery,
+    BroadcastType, ChannelType, ConnectionConfig, DuplicateTitleCheckScope, EventKey, PluginKind,
+    ProgramGenreRange, ProgramSearchQuery, RecordingMode, SearchDateInfo, ServiceKey,
+    ServiceRecordingMode, TimeTableQuery,
     cli::{CliAction, CliCommand, CliInvocation, OutputMode, format_services_plain},
     types::ServiceInfo,
 };
@@ -18,6 +18,10 @@ fn expect_help(action: CliAction) -> String {
         CliAction::Help(text) => text,
         other => panic!("expected help action, got {other:?}"),
     }
+}
+
+fn connection(host: &str, port: u16, timeout_seconds: u64) -> ConnectionConfig {
+    ConnectionConfig::new(host, port).with_timeout(Duration::from_secs(timeout_seconds))
 }
 
 #[test]
@@ -47,9 +51,7 @@ fn parses_global_flags_env_and_recorded_get_command() {
     assert_eq!(
         action,
         CliAction::Run(CliInvocation {
-            host: "cli-host".to_string(),
-            port: 4511,
-            timeout: Duration::from_secs(2),
+            connection: connection("cli-host", 4511, 2),
             output: OutputMode::Json,
             command: CliCommand::RecordedGet(42),
         })
@@ -64,9 +66,7 @@ fn parses_plain_plugin_command_without_cli_suffix() {
     assert_eq!(
         action,
         CliAction::Run(CliInvocation {
-            host: "127.0.0.1".to_string(),
-            port: 4510,
-            timeout: Duration::from_secs(15),
+            connection: connection("127.0.0.1", 4510, 15),
             output: OutputMode::Plain,
             command: CliCommand::Plugins(PluginKind::Write),
         })
@@ -143,9 +143,7 @@ fn parses_program_search_command() {
     assert_eq!(
         action,
         CliAction::Run(CliInvocation {
-            host: "127.0.0.1".to_string(),
-            port: 4510,
-            timeout: Duration::from_secs(15),
+            connection: connection("127.0.0.1", 4510, 15),
             output: OutputMode::Json,
             command: CliCommand::ProgramsSearch(ProgramSearchQuery {
                 keyword: "ニュース".to_string(),
@@ -205,9 +203,7 @@ fn parses_extended_program_search_conditions() {
     assert_eq!(
         action,
         CliAction::Run(CliInvocation {
-            host: "127.0.0.1".to_string(),
-            port: 4510,
-            timeout: Duration::from_secs(15),
+            connection: connection("127.0.0.1", 4510, 15),
             output: OutputMode::Human,
             command: CliCommand::ProgramsSearch(ProgramSearchQuery {
                 keyword: "ニュース".to_string(),
@@ -367,9 +363,7 @@ fn parses_program_timetable_command() {
     assert_eq!(
         action,
         CliAction::Run(CliInvocation {
-            host: "127.0.0.1".to_string(),
-            port: 4510,
-            timeout: Duration::from_secs(15),
+            connection: connection("127.0.0.1", 4510, 15),
             output: OutputMode::Json,
             command: CliCommand::ProgramsTimetable(TimeTableQuery {
                 start_time: Some(

@@ -4,10 +4,10 @@ use std::time::Duration;
 
 use chrono::{Duration as ChronoDuration, Timelike};
 use edcb_tools::{
-    BroadcastType, DuplicateTitleCheckScope, EdcbClient, EventKey, PostRecordingMode,
-    ProgramGenreRange, ProgramSearchQuery, RecordSettingsPatch, RecordingAvailability,
-    RecordingFolder, RecordingMode, SearchDateInfo, SearchKeyInfo, ServiceKey,
-    ServiceRecordingMode, TimeTableQuery,
+    BroadcastType, ConnectionConfig, DuplicateTitleCheckScope, EdcbClient, EventKey,
+    PostRecordingMode, ProgramGenreRange, ProgramSearchQuery, RecordSettingsPatch,
+    RecordingAvailability, RecordingFolder, RecordingMode, SearchDateInfo, SearchKeyInfo,
+    ServiceKey, ServiceRecordingMode, TimeTableQuery,
     flows::{
         apply_record_settings_patch, build_reservation_from_event, create_reservation_condition,
         create_reservation_with_options, delete_reservation, delete_reservation_condition,
@@ -115,6 +115,13 @@ async fn spawn_two_command_server(
     });
 
     (addr, handle)
+}
+
+fn test_client(addr: SocketAddr) -> EdcbClient {
+    EdcbClient::new(
+        ConnectionConfig::new(addr.ip().to_string(), addr.port())
+            .with_timeout(Duration::from_secs(1)),
+    )
 }
 
 async fn spawn_command_sequence_server(
@@ -294,8 +301,7 @@ async fn search_pg_sends_search_key_info_and_decodes_events() {
     };
     let (addr, server) =
         spawn_single_command_server(1025, encode_event_list_for_test(&event)).await;
-    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
-    client.set_timeout(Duration::from_secs(1));
+    let client = test_client(addr);
 
     let programs = client
         .search_pg(std::slice::from_ref(&key))
@@ -465,8 +471,7 @@ async fn search_programs_uses_search_pg_for_specific_service() {
     };
     let (addr, server) =
         spawn_single_command_server(1025, encode_event_list_for_test(&event)).await;
-    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
-    client.set_timeout(Duration::from_secs(1));
+    let client = test_client(addr);
 
     let programs = search_programs(&client, &query)
         .await
@@ -513,8 +518,7 @@ async fn timetable_groups_programs_and_attaches_reservations() {
         (2011, encode_reserve_list_for_test(&[reserve])),
     ])
     .await;
-    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
-    client.set_timeout(Duration::from_secs(1));
+    let client = test_client(addr);
 
     let timetable = get_timetable(
         &client,
@@ -584,8 +588,7 @@ async fn timetable_groups_short_subchannels_under_main_channel() {
         (2011, encode_reserve_list_for_test(&[])),
     ])
     .await;
-    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
-    client.set_timeout(Duration::from_secs(1));
+    let client = test_client(addr);
 
     let timetable = get_timetable(&client, &TimeTableQuery::default())
         .await
@@ -631,8 +634,7 @@ async fn timetable_attaches_reservation_by_time_overlap_when_event_id_differs() 
         (2011, encode_reserve_list_for_test(&[reserve])),
     ])
     .await;
-    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
-    client.set_timeout(Duration::from_secs(1));
+    let client = test_client(addr);
 
     let timetable = get_timetable(&client, &TimeTableQuery::default())
         .await
@@ -676,8 +678,7 @@ async fn timetable_keeps_long_subchannels_as_independent_channels() {
         (2011, encode_reserve_list_for_test(&[])),
     ])
     .await;
-    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
-    client.set_timeout(Duration::from_secs(1));
+    let client = test_client(addr);
 
     let timetable = get_timetable(&client, &TimeTableQuery::default())
         .await
@@ -703,8 +704,7 @@ async fn search_programs_without_service_uses_enum_service_defaults() {
         encode_event_list_for_test(&event),
     )
     .await;
-    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
-    client.set_timeout(Duration::from_secs(1));
+    let client = test_client(addr);
 
     let programs = search_programs(
         &client,
@@ -755,8 +755,7 @@ async fn auto_add_mutations_send_expected_protocol_shapes() {
         (1033, Vec::new()),
     ])
     .await;
-    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
-    client.set_timeout(Duration::from_secs(1));
+    let client = test_client(addr);
 
     client
         .add_auto_add(&data)
@@ -814,8 +813,7 @@ async fn create_reservation_condition_uses_default_record_settings_and_adds_auto
         Vec::new(),
     )
     .await;
-    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
-    client.set_timeout(Duration::from_secs(1));
+    let client = test_client(addr);
 
     let condition = create_reservation_condition(&client, &query, &options)
         .await
@@ -872,8 +870,7 @@ async fn update_reservation_condition_merges_existing_auto_add_and_returns_updat
         ),
     ])
     .await;
-    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
-    client.set_timeout(Duration::from_secs(1));
+    let client = test_client(addr);
 
     let condition = update_reservation_condition(
         &client,
@@ -916,8 +913,7 @@ async fn delete_reservation_condition_fetches_existing_auto_add_then_deletes_by_
         Vec::new(),
     )
     .await;
-    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
-    client.set_timeout(Duration::from_secs(1));
+    let client = test_client(addr);
 
     let condition = delete_reservation_condition(&client, existing.data_id)
         .await
@@ -951,8 +947,7 @@ async fn preview_reservation_looks_up_event_with_service_and_time_filter() {
         encode_reserve_for_test(&reserve_fixture_for_test()),
     )
     .await;
-    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
-    client.set_timeout(Duration::from_secs(1));
+    let client = test_client(addr);
 
     let reserve = preview_reservation(&client, event_key)
         .await
@@ -1001,8 +996,7 @@ fn builds_reservation_from_default_settings_and_event() {
 async fn get_default_reserve_sends_get_reserve2_sentinel_id() {
     let response_body = encode_reserve_for_test(&reserve_fixture_for_test());
     let (addr, server) = spawn_single_command_server(2012, response_body).await;
-    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
-    client.set_timeout(Duration::from_secs(1));
+    let client = test_client(addr);
 
     let reserve = client
         .get_default_reserve()
@@ -1020,8 +1014,7 @@ async fn get_default_reserve_sends_get_reserve2_sentinel_id() {
 #[tokio::test]
 async fn add_reserve_sends_versioned_reserve_vector() {
     let (addr, server) = spawn_single_command_server(2013, 5_u16.to_le_bytes().to_vec()).await;
-    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
-    client.set_timeout(Duration::from_secs(1));
+    let client = test_client(addr);
     let reserve = reserve_fixture_for_test();
 
     client
@@ -1062,8 +1055,7 @@ async fn create_reservation_with_options_applies_recording_options() {
         (2013, 5_u16.to_le_bytes().to_vec()),
     ])
     .await;
-    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
-    client.set_timeout(Duration::from_secs(1));
+    let client = test_client(addr);
 
     let reserve = create_reservation_with_options(
         &client,
@@ -1100,8 +1092,7 @@ async fn update_reservation_changes_existing_record_settings() {
         (2012, encode_reserve_for_test(&updated)),
     ])
     .await;
-    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
-    client.set_timeout(Duration::from_secs(1));
+    let client = test_client(addr);
 
     let reserve = update_reservation(
         &client,
@@ -1131,8 +1122,7 @@ async fn delete_reservation_fetches_existing_reserve_then_sends_delete() {
     let reserve = reserve_fixture_for_test();
     let (addr, server) =
         spawn_two_command_server(2012, encode_reserve_for_test(&reserve), 1014, Vec::new()).await;
-    let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
-    client.set_timeout(Duration::from_secs(1));
+    let client = test_client(addr);
 
     let deleted = delete_reservation(&client, reserve.reserve_id)
         .await

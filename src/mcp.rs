@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crate::{
-    BroadcastType, ChannelType, DuplicateTitleCheckScope, EdcbClient, EventKey, PluginKind,
-    ProgramGenreRange, ProgramSearchQuery, RecordSettingsPatch, SearchDateInfo, ServiceKey,
-    TimeTableQuery, flows,
+    BroadcastType, ChannelType, ConnectionConfig, DuplicateTitleCheckScope, EdcbClient, EventKey,
+    PluginKind, ProgramGenreRange, ProgramSearchQuery, RecordSettingsPatch, SearchDateInfo,
+    ServiceKey, TimeTableQuery, flows,
 };
 use chrono::{DateTime, FixedOffset};
 use clap::{Parser, error::ErrorKind, value_parser};
@@ -19,30 +19,13 @@ use serde::{Deserialize, Serialize};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServerConfig {
-    pub host: String,
-    pub port: u16,
-    pub timeout: Duration,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ServerConfigAction {
-    Run(ServerConfig),
+pub enum ServerAction {
+    Run(ConnectionConfig),
     Help(String),
     Version(String),
 }
 
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            host: "127.0.0.1".to_string(),
-            port: 4510,
-            timeout: Duration::from_secs(15),
-        }
-    }
-}
-
-impl ServerConfigAction {
+impl ServerAction {
     pub fn from_env_args() -> Result<Self, String> {
         Self::from_args_and_env(std::env::args(), std::env::vars())
     }
@@ -63,7 +46,7 @@ impl ServerConfigAction {
             .into_iter()
             .map(|arg| arg.as_ref().to_string())
             .collect();
-        let raw = match RawServerConfig::try_parse_from(args) {
+        let raw = match RawServerArgs::try_parse_from(args) {
             Ok(raw) => raw,
             Err(error) => match error.kind() {
                 ErrorKind::DisplayHelp => return Ok(Self::Help(error.to_string())),
@@ -76,37 +59,13 @@ impl ServerConfigAction {
     }
 }
 
-impl ServerConfig {
-    pub fn from_env_args() -> Result<Self, String> {
-        Self::from_action(ServerConfigAction::from_env_args()?)
-    }
-
-    pub fn from_args_and_env<A, S, E, K, V>(args: A, env: E) -> Result<Self, String>
-    where
-        A: IntoIterator<Item = S>,
-        S: AsRef<str>,
-        E: IntoIterator<Item = (K, V)>,
-        K: AsRef<str>,
-        V: AsRef<str>,
-    {
-        Self::from_action(ServerConfigAction::from_args_and_env(args, env)?)
-    }
-
-    fn from_action(action: ServerConfigAction) -> Result<Self, String> {
-        match action {
-            ServerConfigAction::Run(config) => Ok(config),
-            ServerConfigAction::Help(text) | ServerConfigAction::Version(text) => Err(text),
-        }
-    }
-}
-
 #[derive(Debug, Parser)]
 #[command(
     name = "edcb-mcp",
     version = VERSION,
     about = "EDCB CtrlCmd stdio MCP server"
 )]
-struct RawServerConfig {
+struct RawServerArgs {
     #[arg(
         long,
         value_name = "host",
@@ -128,9 +87,9 @@ struct RawServerConfig {
     timeout_seconds: Option<u64>,
 }
 
-impl RawServerConfig {
-    fn into_config(self, env: BTreeMap<String, String>) -> Result<ServerConfig, String> {
-        let mut config = ServerConfig::default();
+impl RawServerArgs {
+    fn into_config(self, env: BTreeMap<String, String>) -> Result<ConnectionConfig, String> {
+        let mut config = ConnectionConfig::default();
         if let Some(host) = env.get("EDCB_HOST") {
             config.host.clone_from(host);
         }
@@ -245,11 +204,31 @@ pub struct SearchProgramsServiceParam {
     pub service_id: u16,
 }
 
+impl SearchProgramsServiceParam {
+    fn to_service_key(&self) -> ServiceKey {
+        ServiceKey {
+            onid: self.network_id,
+            tsid: self.transport_stream_id,
+            sid: self.service_id,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SearchProgramsGenreParam {
     pub major: u8,
     pub middle: u8,
     pub user_nibble: Option<u16>,
+}
+
+impl SearchProgramsGenreParam {
+    fn to_genre_range(&self) -> ProgramGenreRange {
+        ProgramGenreRange {
+            major: self.major,
+            middle: self.middle,
+            user_nibble: self.user_nibble,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -267,11 +246,7 @@ impl SearchProgramsParam {
         let service_ranges = self.service_ranges.as_ref().map(|services| {
             services
                 .iter()
-                .map(|service| ServiceKey {
-                    onid: service.network_id,
-                    tsid: service.transport_stream_id,
-                    sid: service.service_id,
-                })
+                .map(SearchProgramsServiceParam::to_service_key)
                 .collect()
         });
         let genre_ranges = self
@@ -279,11 +254,7 @@ impl SearchProgramsParam {
             .as_ref()
             .into_iter()
             .flatten()
-            .map(|genre| ProgramGenreRange {
-                major: genre.major,
-                middle: genre.middle,
-                user_nibble: genre.user_nibble,
-            })
+            .map(SearchProgramsGenreParam::to_genre_range)
             .collect();
         let date_ranges = self
             .date_ranges
@@ -376,11 +347,7 @@ impl GetTimetableParam {
             .as_ref()
             .into_iter()
             .flatten()
-            .map(|service| ServiceKey {
-                onid: service.network_id,
-                tsid: service.transport_stream_id,
-                sid: service.service_id,
-            })
+            .map(SearchProgramsServiceParam::to_service_key)
             .collect();
         if let (Some(start), Some(end)) = (self.start_time, self.end_time)
             && end <= start
@@ -429,7 +396,7 @@ pub struct UpdateReservationConditionParam {
 
 #[derive(Debug, Clone)]
 pub struct EdcbMcpServer {
-    config: ServerConfig,
+    config: ConnectionConfig,
     tool_router: ToolRouter<Self>,
 }
 
@@ -443,7 +410,7 @@ impl ServerHandler for EdcbMcpServer {
 
 #[tool_router(router = tool_router)]
 impl EdcbMcpServer {
-    pub fn new(config: ServerConfig) -> Self {
+    pub fn new(config: ConnectionConfig) -> Self {
         Self {
             config,
             tool_router: Self::tool_router(),
@@ -690,9 +657,7 @@ impl EdcbMcpServer {
     }
 
     fn client(&self) -> EdcbClient {
-        let mut client = EdcbClient::new(self.config.host.clone(), self.config.port);
-        client.set_timeout(self.config.timeout);
-        client
+        EdcbClient::new(self.config.clone())
     }
 }
 

@@ -1,4 +1,3 @@
-use std::str::FromStr;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -50,44 +49,48 @@ const CMD_EPG_SRV_ADD_MANU_ADD2: i32 = 2142;
 const CMD_EPG_SRV_CHG_MANU_ADD2: i32 = 2144;
 const CMD_EPG_SRV_GET_STATUS_NOTIFY2: i32 = 2200;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PluginKind {
-    RecName = 1,
-    Write = 2,
-}
-
-impl FromStr for PluginKind {
-    type Err = String;
-
-    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
-        match value {
-            "write" => Ok(Self::Write),
-            "rec_name" => Ok(Self::RecName),
-            _ => Err(format!("plugin kind must be write or rec_name: {value}")),
-        }
-    }
-}
-
 const DEFAULT_RESERVE_ID: i32 = 0x7fff_ffff;
 
 #[derive(Debug, Clone)]
 pub struct EdcbClient {
-    host: String,
-    port: u16,
-    timeout: Duration,
+    config: ConnectionConfig,
 }
 
-impl EdcbClient {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionConfig {
+    pub host: String,
+    pub port: u16,
+    pub timeout: Duration,
+}
+
+impl Default for ConnectionConfig {
+    fn default() -> Self {
+        Self {
+            host: "127.0.0.1".to_string(),
+            port: 4510,
+            timeout: Duration::from_secs(15),
+        }
+    }
+}
+
+impl ConnectionConfig {
     pub fn new(host: impl Into<String>, port: u16) -> Self {
         Self {
             host: host.into(),
             port,
-            timeout: Duration::from_secs(15),
+            ..Self::default()
         }
     }
 
-    pub fn set_timeout(&mut self, timeout: Duration) {
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+}
+
+impl EdcbClient {
+    pub fn new(config: ConnectionConfig) -> Self {
+        Self { config }
     }
 
     pub async fn enum_service(&self) -> Result<Vec<ServiceInfo>> {
@@ -350,17 +353,17 @@ impl EdcbClient {
     }
 
     async fn send_and_receive(&self, request: Vec<u8>) -> Result<Vec<u8>> {
-        let addr = format!("{}:{}", self.host, self.port);
-        let mut stream = time::timeout(self.timeout, TcpStream::connect(addr))
+        let addr = format!("{}:{}", self.config.host, self.config.port);
+        let mut stream = time::timeout(self.config.timeout, TcpStream::connect(addr))
             .await
             .map_err(|_| EdcbError::Timeout)??;
 
-        time::timeout(self.timeout, stream.write_all(&request))
+        time::timeout(self.config.timeout, stream.write_all(&request))
             .await
             .map_err(|_| EdcbError::Timeout)??;
 
         let mut header = [0_u8; 8];
-        time::timeout(self.timeout, stream.read_exact(&mut header))
+        time::timeout(self.config.timeout, stream.read_exact(&mut header))
             .await
             .map_err(|_| EdcbError::Timeout)??;
 
@@ -369,7 +372,7 @@ impl EdcbClient {
         let size = usize::try_from(size)
             .map_err(|_| EdcbError::Decode("negative response body size".to_string()))?;
         let mut body = vec![0_u8; size];
-        time::timeout(self.timeout, stream.read_exact(&mut body))
+        time::timeout(self.config.timeout, stream.read_exact(&mut body))
             .await
             .map_err(|_| EdcbError::Timeout)??;
 

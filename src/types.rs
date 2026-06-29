@@ -283,6 +283,25 @@ fn normalize_option(value: &str) -> String {
         .collect()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginKind {
+    RecName = 1,
+    Write = 2,
+}
+
+impl FromStr for PluginKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match normalize_option(value).as_str() {
+            "write" => Ok(Self::Write),
+            "recname" => Ok(Self::RecName),
+            _ => Err(format!("plugin kind must be write or rec_name: {value}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ReserveData {
     pub title: String,

@@ -10,10 +10,10 @@ pub mod util;
 
 mod codec;
 
-pub use client::{EdcbClient, PluginKind};
+pub use client::{ConnectionConfig, EdcbClient};
 pub use error::{EdcbError, Result};
 pub use types::{
-    BroadcastType, ChannelType, DuplicateTitleCheckScope, EventKey, PostRecordingMode,
+    BroadcastType, ChannelType, DuplicateTitleCheckScope, EventKey, PluginKind, PostRecordingMode,
     ProgramGenreRange, ProgramSearchQuery, RecordSettingsPatch, RecordingAvailability,
     RecordingFolder, RecordingMode, ReservationCondition, ReservationStatus, SearchDateInfo,
     SearchKeyInfo, ServiceKey, ServiceRecordingMode, TimeTable, TimeTableChannel,

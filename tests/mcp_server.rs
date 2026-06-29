@@ -4,12 +4,12 @@ use std::time::Duration;
 
 use chrono::DateTime;
 use edcb_tools::{
-    BroadcastType, ChannelType, DuplicateTitleCheckScope, PluginKind, ProgramGenreRange,
-    ProgramSearchQuery, SearchDateInfo, ServiceKey, TimeTableQuery,
+    BroadcastType, ChannelType, ConnectionConfig, DuplicateTitleCheckScope, PluginKind,
+    ProgramGenreRange, ProgramSearchQuery, SearchDateInfo, ServiceKey, TimeTableQuery,
     mcp::{
         CreateReservationConditionParam, EdcbMcpServer, GetTimetableParam, PluginKindParam,
         ReservationConditionIdParam, SearchProgramsDateParam, SearchProgramsGenreParam,
-        SearchProgramsParam, SearchProgramsServiceParam, ServerConfig, ServerConfigAction,
+        SearchProgramsParam, SearchProgramsServiceParam, ServerAction,
     },
 };
 use rmcp::ServiceExt;
@@ -81,7 +81,7 @@ async fn spawn_service_list_server() -> (SocketAddr, JoinHandle<()>) {
 
 #[test]
 fn config_uses_cli_then_env_then_defaults() {
-    let config = ServerConfig::from_args_and_env(
+    let action = ServerAction::from_args_and_env(
         ["edcb-mcp", "--host", "192.0.2.10", "--port", "5510"],
         [
             ("EDCB_HOST", "127.0.0.2"),
@@ -90,14 +90,20 @@ fn config_uses_cli_then_env_then_defaults() {
         ],
     )
     .expect("config should parse");
+    let ServerAction::Run(config) = action else {
+        panic!("expected run config action");
+    };
 
     assert_eq!(config.host, "192.0.2.10");
     assert_eq!(config.port, 5510);
     assert_eq!(config.timeout, Duration::from_secs(3));
 
-    let default_config =
-        ServerConfig::from_args_and_env(["edcb-mcp"], std::iter::empty::<(&str, &str)>())
+    let default_action =
+        ServerAction::from_args_and_env(["edcb-mcp"], std::iter::empty::<(&str, &str)>())
             .expect("default config should parse");
+    let ServerAction::Run(default_config) = default_action else {
+        panic!("expected default run config action");
+    };
     assert_eq!(default_config.host, "127.0.0.1");
     assert_eq!(default_config.port, 4510);
     assert_eq!(default_config.timeout, Duration::from_secs(15));
@@ -105,7 +111,7 @@ fn config_uses_cli_then_env_then_defaults() {
 
 #[test]
 fn invalid_config_reports_the_bad_field() {
-    let error = ServerConfig::from_args_and_env(
+    let error = ServerAction::from_args_and_env(
         ["edcb-mcp", "--port", "nope"],
         std::iter::empty::<(&str, &str)>(),
     )
@@ -116,14 +122,12 @@ fn invalid_config_reports_the_bad_field() {
 
 #[test]
 fn config_help_is_parsed_as_an_action() {
-    let action = ServerConfigAction::from_args_and_env(
-        ["edcb-mcp", "--help"],
-        std::iter::empty::<(&str, &str)>(),
-    )
-    .expect("help should parse as a config action");
+    let action =
+        ServerAction::from_args_and_env(["edcb-mcp", "--help"], std::iter::empty::<(&str, &str)>())
+            .expect("help should parse as a config action");
 
     match action {
-        ServerConfigAction::Help(text) => {
+        ServerAction::Help(text) => {
             assert!(text.contains("Usage: edcb-mcp [OPTIONS]"));
             assert!(text.contains("--host"));
         }
@@ -368,7 +372,7 @@ fn get_timetable_param_maps_to_query() {
 
 #[test]
 fn mcp_server_exposes_v1_tools() {
-    let server = EdcbMcpServer::new(ServerConfig::default());
+    let server = EdcbMcpServer::new(ConnectionConfig::default());
     let tool_names: Vec<_> = server.tool_names();
 
     assert_eq!(
@@ -402,7 +406,7 @@ fn mcp_server_exposes_v1_tools() {
 async fn mcp_service_lists_tools_over_transport() {
     let (server_transport, client_transport) = tokio::io::duplex(4096);
     let server_handle = tokio::spawn(async move {
-        let service = EdcbMcpServer::new(ServerConfig::default())
+        let service = EdcbMcpServer::new(ConnectionConfig::default())
             .serve(server_transport)
             .await
             .expect("MCP server should start over duplex transport");
@@ -437,7 +441,7 @@ async fn mcp_service_lists_tools_over_transport() {
 #[tokio::test]
 async fn list_services_tool_returns_structured_service_info() {
     let (addr, server_task) = spawn_service_list_server().await;
-    let server = EdcbMcpServer::new(ServerConfig {
+    let server = EdcbMcpServer::new(ConnectionConfig {
         host: addr.ip().to_string(),
         port: addr.port(),
         timeout: Duration::from_secs(1),
