@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use edcb_mcp::mcp::{EdcbMcpServer, PluginKindParam, ServerConfig};
+use edcb_tools::mcp::{EdcbMcpServer, PluginKindParam, ServerConfig};
 use rmcp::ServiceExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -48,7 +48,7 @@ async fn spawn_service_list_server() -> (SocketAddr, JoinHandle<()>) {
         );
         assert!(payload.is_empty());
 
-        let response_body = edcb_mcp::test_support::encode_service_list_for_test();
+        let response_body = edcb_tools::test_support::encode_service_list_for_test();
         socket
             .write_i32_le(1)
             .await

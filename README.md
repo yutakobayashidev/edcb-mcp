@@ -1,4 +1,4 @@
-# edcb-mcp
+# edcb-tools
 
 Rust client library, command line interface, and MCP server for EDCB/EpgTimer
 CtrlCmd.
@@ -19,32 +19,32 @@ first-class binaries:
 Run the CLI directly from GitHub:
 
 ```sh
-nix run github:yutakobayashidev/edcb-mcp#edcb -- --host 127.0.0.1 services
+nix run github:yutakobayashidev/edcb-tools#edcb -- --host 127.0.0.1 services
 ```
 
 Run the stdio MCP server directly from GitHub:
 
 ```sh
-nix run github:yutakobayashidev/edcb-mcp#edcb-mcp -- --host 127.0.0.1 --port 4510
+nix run github:yutakobayashidev/edcb-tools#edcb-mcp -- --host 127.0.0.1 --port 4510
 ```
 
 Install both binaries into a Nix profile:
 
 ```sh
-nix profile install github:yutakobayashidev/edcb-mcp#edcb-mcp
+nix profile install github:yutakobayashidev/edcb-tools#edcb-tools
 ```
 
 Use the package from another flake:
 
 ```nix
 {
-  inputs.edcb-mcp.url = "github:yutakobayashidev/edcb-mcp";
+  inputs.edcb-tools.url = "github:yutakobayashidev/edcb-tools";
 
-  outputs = { edcb-mcp, ... }: {
-    # edcb-mcp.packages.${system}.default
-    # edcb-mcp.packages.${system}.edcb-mcp
-    # edcb-mcp.apps.${system}.edcb
-    # edcb-mcp.apps.${system}.edcb-mcp
+  outputs = { edcb-tools, ... }: {
+    # edcb-tools.packages.${system}.default
+    # edcb-tools.packages.${system}.edcb-tools
+    # edcb-tools.apps.${system}.edcb
+    # edcb-tools.apps.${system}.edcb-mcp
   };
 }
 ```
@@ -54,7 +54,7 @@ published to crates.io:
 
 ```toml
 [dependencies]
-edcb-mcp = { git = "https://github.com/yutakobayashidev/edcb-mcp" }
+edcb-tools = { git = "https://github.com/yutakobayashidev/edcb-tools" }
 ```
 
 ## Supported in v1
@@ -92,10 +92,10 @@ server call these flows instead of embedding CtrlCmd orchestration directly.
 ```rust
 use std::time::Duration;
 
-use edcb_mcp::EdcbClient;
+use edcb_tools::EdcbClient;
 
 #[tokio::main]
-async fn main() -> edcb_mcp::Result<()> {
+async fn main() -> edcb_tools::Result<()> {
     let mut client = EdcbClient::new("127.0.0.1", 4510);
     client.set_timeout(Duration::from_secs(5));
 

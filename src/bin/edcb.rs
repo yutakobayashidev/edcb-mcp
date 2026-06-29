@@ -1,6 +1,6 @@
 use std::process;
 
-use edcb_mcp::cli::{CliAction, execute, help_text, version_text};
+use edcb_tools::cli::{CliAction, execute, help_text, version_text};
 
 #[tokio::main]
 async fn main() {

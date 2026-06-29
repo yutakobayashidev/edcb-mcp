@@ -2,7 +2,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use edcb_mcp::{EdcbClient, EdcbError};
+use edcb_tools::{EdcbClient, EdcbError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -73,7 +73,7 @@ async fn spawn_single_response_server(
 
 #[tokio::test]
 async fn enum_service_sends_command_and_decodes_response() {
-    let response_body = edcb_mcp::test_support::encode_service_list_for_test();
+    let response_body = edcb_tools::test_support::encode_service_list_for_test();
     let (addr, server) = spawn_single_response_server(1, response_body).await;
     let mut client = EdcbClient::new(addr.ip().to_string(), addr.port());
     client.set_timeout(Duration::from_secs(1));

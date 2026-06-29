@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use edcb_mcp::{
+use edcb_tools::{
     EventKey, PluginKind, ProgramSearchQuery, RecordingMode, ServiceKey, ServiceRecordingMode,
     cli::{CliAction, CliCommand, CliInvocation, OutputMode, format_services_plain},
     types::ServiceInfo,

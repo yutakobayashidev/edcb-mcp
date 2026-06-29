@@ -1,6 +1,6 @@
 use rmcp::{ServiceExt, transport::stdio};
 
-use edcb_mcp::mcp::{EdcbMcpServer, ServerConfig};
+use edcb_tools::mcp::{EdcbMcpServer, ServerConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

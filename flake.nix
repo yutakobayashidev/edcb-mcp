@@ -48,7 +48,7 @@
             ]
           );
 
-        edcb-mcp = final.callPackage (
+        edcb-tools = final.callPackage (
           {
             lib,
             makeRustPlatform,
@@ -62,7 +62,7 @@
             };
           in
           rustPlatform.buildRustPackage {
-            pname = "edcb-mcp";
+            pname = "edcb-tools";
             version = "0.1.0";
             src = lib.fileset.toSource {
               root = ./.;
@@ -76,7 +76,7 @@
 
             meta = {
               description = "EDCB CtrlCmd Rust client library, CLI, and MCP server";
-              homepage = "https://github.com/yutakobayashidev/edcb-mcp";
+              homepage = "https://github.com/yutakobayashidev/edcb-tools";
               license = lib.licenses.mit;
               mainProgram = "edcb";
             };
@@ -87,8 +87,8 @@
       packages = forEachSupportedSystem (
         { pkgs, ... }:
         {
-          default = pkgs.edcb-mcp;
-          edcb-mcp = pkgs.edcb-mcp;
+          default = pkgs.edcb-tools;
+          edcb-tools = pkgs.edcb-tools;
         }
       );
 
@@ -97,11 +97,11 @@
         let
           edcb = {
             type = "app";
-            program = "${pkgs.edcb-mcp}/bin/edcb";
+            program = "${pkgs.edcb-tools}/bin/edcb";
           };
           edcb-mcp = {
             type = "app";
-            program = "${pkgs.edcb-mcp}/bin/edcb-mcp";
+            program = "${pkgs.edcb-tools}/bin/edcb-mcp";
           };
         in
         {
@@ -136,7 +136,7 @@
       formatter = forEachSupportedSystem (
         { pkgs, ... }:
         pkgs.writeShellApplication {
-          name = "format-edcb-mcp";
+          name = "format-edcb-tools";
           runtimeInputs = [
             pkgs.nixfmt
           ];

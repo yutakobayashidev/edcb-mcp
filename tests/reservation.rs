@@ -3,7 +3,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use chrono::Timelike;
-use edcb_mcp::{
+use edcb_tools::{
     EdcbClient, EventKey, PostRecordingMode, ProgramSearchQuery, RecordSettingsPatch,
     RecordingFolder, RecordingMode, ServiceKey, ServiceRecordingMode,
     flows::{
