@@ -183,6 +183,34 @@ delete command and returns the deleted reservation data.
 `programs search` prints event keys as `onid:tsid:sid:eid`, which can be passed
 to `reserves preview` or `reserves create`.
 
+Preview JSON has the same `ReserveData` shape that create/get return. The
+previewed reservation has not been sent to EDCB yet. Abridged example:
+
+```json
+{
+  "reserve_id": 0,
+  "onid": 32736,
+  "tsid": 32736,
+  "sid": 1024,
+  "eid": 4208,
+  "start_time": "2026-06-29T22:00:00+09:00",
+  "duration_second": 1800,
+  "station_name": "Example Service",
+  "title": "Example Program",
+  "rec_setting": {
+    "rec_mode": 1,
+    "priority": 2
+  }
+}
+```
+
+Useful reservation preview selectors:
+
+```sh
+edcb --json reserves preview --event 32736:32736:1024:4208 \
+  | jq '{event: "\(.onid):\(.tsid):\(.sid):\(.eid)", start_time, title, priority: .rec_setting.priority}'
+```
+
 Program search uses EDCB's `SearchKeyInfo`/`SearchPg` semantics. Date ranges are
 recurring weekday/time-of-day ranges, not absolute datetimes. If no service is
 specified, the CLI first fetches EDCB's service list and searches those services.
@@ -242,6 +270,61 @@ Examples:
 ```sh
 edcb programs timetable --channel-type gr
 edcb programs timetable --service 32736:32736:1024 --start-time 2026-06-29T19:00:00+09:00 --end-time 2026-06-29T23:00:00+09:00
+```
+
+Timetable JSON nests program details under `channels[].programs[].event`.
+Reservation metadata is optional per program; check
+`reservation_metadata_status` before treating `reservation: null` as definitive.
+Abridged example:
+
+```json
+{
+  "channels": [
+    {
+      "service": {
+        "onid": 32736,
+        "tsid": 32736,
+        "sid": 1024,
+        "service_name": "Example Service"
+      },
+      "programs": [
+        {
+          "event": {
+            "onid": 32736,
+            "tsid": 32736,
+            "sid": 1024,
+            "eid": 4208,
+            "start_time": "2026-06-29T22:00:00+09:00",
+            "short_info": {
+              "event_name": "Example Program"
+            }
+          },
+          "reservation": {
+            "id": 77,
+            "status": "Reserved",
+            "recording_availability": "Full"
+          }
+        }
+      ],
+      "subchannels": null
+    }
+  ],
+  "date_range": {
+    "earliest": "2026-06-29T19:00:00+09:00",
+    "latest": "2026-06-29T23:00:00+09:00"
+  },
+  "reservation_metadata_status": "Ok"
+}
+```
+
+Useful timetable selectors:
+
+```sh
+edcb --json programs timetable --channel-type gr \
+  | jq -r '.channels[].programs[] | [.event.onid, .event.tsid, .event.sid, .event.eid, .event.start_time, .event.short_info.event_name, (.reservation != null)] | @tsv'
+
+edcb --json programs timetable --channel-type gr \
+  | jq -r '.channels[].programs[] | select(.reservation == null) | "\(.event.onid):\(.event.tsid):\(.event.sid):\(.event.eid)\t\(.event.start_time)\t\(.event.short_info.event_name)"'
 ```
 
 `channels` returns a DB-free KonomiTV-style channel snapshot built from
