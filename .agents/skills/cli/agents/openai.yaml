@@ -1,4 +1,0 @@
-interface:
-  display_name: "edcb CLI"
-  short_description: "Use the edcb command line interface"
-  default_prompt: "Use $cli to run or explain an edcb CLI command."

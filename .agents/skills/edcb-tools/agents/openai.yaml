@@ -1,0 +1,4 @@
+interface:
+  display_name: "edcb-tools"
+  short_description: "Use the edcb-tools command line interface and MCP server"
+  default_prompt: "Use $edcb-tools to run or explain edcb-tools CLI and MCP commands."

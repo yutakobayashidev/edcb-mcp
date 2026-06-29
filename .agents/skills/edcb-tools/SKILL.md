@@ -1,9 +1,9 @@
 ---
-name: cli
-description: Use the edcb CLI in this repository. Use when the user wants to run, explain, demonstrate, or troubleshoot `edcb` commands for EDCB CtrlCmd operations, including service listing, program search, recorded item lookup, reservation preview/create/update/delete, recording options, JSON output, connection flags, and Nix flake invocation.
+name: edcb-tools
+description: Use when working with the edcb-tools CLI or MCP server for EDCB CtrlCmd operations, including service listing, program search, recorded item lookup, reservation preview/create/update/delete, recording options, JSON output, connection flags, and Nix flake invocation.
 ---
 
-# edcb CLI
+# edcb-tools
 
 ## Overview
 
