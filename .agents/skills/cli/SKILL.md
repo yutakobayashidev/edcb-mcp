@@ -110,12 +110,20 @@ Timetable options:
 - `--end-time <RFC3339 datetime>`
 - `--channel-type <gr|bs|cs|catv|sky|bs4k>`
 
+JSON timetable output includes `reservation_metadata_status`. Programs may be
+present even when reservation metadata lookup failed, so do not treat missing
+per-program reservations as definitive unless the status is `Ok`.
+
 Use `channels` when the caller wants KonomiTV-style channel IDs without a DB:
 
 ```sh
 edcb channels
 edcb --json channels
 ```
+
+Plain `channels` output is one line per channel. JSON output is an object with
+`channels` and `epg_service_status`; check the status before assuming EPG
+metadata such as remocon IDs was available.
 
 Use `recording defaults` for the current EDCB default reservation settings, and
 `recording presets` for `EpgTimerSrv.ini` presets:

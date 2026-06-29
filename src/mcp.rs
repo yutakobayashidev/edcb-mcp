@@ -1,6 +1,3 @@
-use std::collections::BTreeMap;
-use std::time::Duration;
-
 use crate::{
     BroadcastType, ChannelType, ConnectionConfig, DuplicateTitleCheckScope, EdcbClient, EventKey,
     PluginKind, ProgramGenreRange, ProgramSearchQuery, RecordSettingsPatch, SearchDateInfo,
@@ -15,6 +12,7 @@ use rmcp::{
     schemars, tool, tool_handler, tool_router,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -89,27 +87,7 @@ struct RawServerArgs {
 
 impl RawServerArgs {
     fn into_config(self, env: BTreeMap<String, String>) -> Result<ConnectionConfig, String> {
-        let mut config = ConnectionConfig::default();
-        if let Some(host) = env.get("EDCB_HOST") {
-            config.host.clone_from(host);
-        }
-        if let Some(port) = env.get("EDCB_PORT") {
-            config.port = parse_port(port)?;
-        }
-        if let Some(timeout) = env.get("EDCB_TIMEOUT_SECONDS") {
-            config.timeout = Duration::from_secs(parse_timeout(timeout)?);
-        }
-        if let Some(host) = self.host {
-            config.host = host;
-        }
-        if let Some(port) = self.port {
-            config.port = port;
-        }
-        if let Some(timeout_seconds) = self.timeout_seconds {
-            config.timeout = Duration::from_secs(timeout_seconds);
-        }
-
-        Ok(config)
+        ConnectionConfig::from_env_and_args(self.host, self.port, self.timeout_seconds, &env)
     }
 }
 
@@ -119,23 +97,6 @@ fn clap_error_message(error: clap::Error) -> String {
         .strip_prefix("error: ")
         .unwrap_or(&message)
         .to_string()
-}
-
-fn parse_port(value: &str) -> Result<u16, String> {
-    value
-        .parse()
-        .map_err(|_| format!("port must be a number in 0..=65535: {value}"))
-}
-
-fn parse_timeout(value: &str) -> Result<u64, String> {
-    let timeout = value
-        .parse::<u64>()
-        .map_err(|_| format!("timeout must be a positive integer: {value}"))?;
-    if timeout == 0 {
-        Err("timeout must be greater than zero".to_string())
-    } else {
-        Ok(timeout)
-    }
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -267,20 +228,7 @@ impl SearchProgramsParam {
             })
             .transpose()?
             .unwrap_or_default();
-        if let (Some(min), Some(max)) = (self.duration_range_min, self.duration_range_max)
-            && min > max
-        {
-            return Err(
-                "program search duration_range_min must be less than or equal to duration_range_max"
-                    .to_string(),
-            );
-        }
-        if self.duplicate_title_check_period_days > 9999 {
-            return Err(
-                "program search duplicate_title_check_period_days must be in 0..=9999".to_string(),
-            );
-        }
-        Ok(ProgramSearchQuery {
+        let query = ProgramSearchQuery {
             is_enabled: self.is_enabled,
             keyword: self.keyword.clone(),
             exclude_keyword: self.exclude_keyword.clone(),
@@ -298,7 +246,9 @@ impl SearchProgramsParam {
             broadcast_type: self.broadcast_type,
             duplicate_title_check_scope: self.duplicate_title_check_scope,
             duplicate_title_check_period_days: self.duplicate_title_check_period_days,
-        })
+        };
+        query.validate()?;
+        Ok(query)
     }
 }
 
@@ -312,23 +262,16 @@ fn default_duplicate_title_check_period_days() -> u16 {
 
 impl SearchProgramsDateParam {
     fn try_into_search_date(&self) -> Result<SearchDateInfo, String> {
-        if self.start_day_of_week > 6 || self.end_day_of_week > 6 {
-            return Err("date range day_of_week must be in 0..=6".to_string());
-        }
-        if self.start_hour > 23 || self.end_hour > 23 {
-            return Err("date range hour must be in 0..=23".to_string());
-        }
-        if self.start_minute > 59 || self.end_minute > 59 {
-            return Err("date range minute must be in 0..=59".to_string());
-        }
-        Ok(SearchDateInfo {
+        let date = SearchDateInfo {
             start_day_of_week: self.start_day_of_week,
             start_hour: self.start_hour,
             start_min: self.start_minute,
             end_day_of_week: self.end_day_of_week,
             end_hour: self.end_hour,
             end_min: self.end_minute,
-        })
+        };
+        date.validate()?;
+        Ok(date)
     }
 }
 
@@ -349,17 +292,14 @@ impl GetTimetableParam {
             .flatten()
             .map(SearchProgramsServiceParam::to_service_key)
             .collect();
-        if let (Some(start), Some(end)) = (self.start_time, self.end_time)
-            && end <= start
-        {
-            return Err("timetable end_time must be later than start_time".to_string());
-        }
-        Ok(TimeTableQuery {
+        let query = TimeTableQuery {
             start_time: self.start_time,
             end_time: self.end_time,
             channel_type: self.channel_type,
             services,
-        })
+        };
+        query.validate()?;
+        Ok(query)
     }
 }
 

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -85,6 +86,115 @@ impl ConnectionConfig {
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
+    }
+
+    pub(crate) fn from_env_and_args(
+        host: Option<String>,
+        port: Option<u16>,
+        timeout_seconds: Option<u64>,
+        env: &BTreeMap<String, String>,
+    ) -> std::result::Result<Self, String> {
+        let default = Self::default();
+        let host = host
+            .or_else(|| env.get("EDCB_HOST").cloned())
+            .unwrap_or(default.host);
+        let port = match port {
+            Some(port) => port,
+            None => env
+                .get("EDCB_PORT")
+                .map(|value| parse_port(value))
+                .transpose()?
+                .unwrap_or(default.port),
+        };
+        let timeout_seconds = match timeout_seconds {
+            Some(timeout_seconds) => timeout_seconds,
+            None => env
+                .get("EDCB_TIMEOUT_SECONDS")
+                .map(|value| parse_timeout(value))
+                .transpose()?
+                .unwrap_or(default.timeout.as_secs()),
+        };
+        Ok(Self {
+            host,
+            port,
+            timeout: Duration::from_secs(timeout_seconds),
+        })
+    }
+
+    fn transport(&self) -> Transport {
+        Transport::Tcp(TcpTransport {
+            host: self.host.clone(),
+            port: self.port,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Transport {
+    Tcp(TcpTransport),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TcpTransport {
+    host: String,
+    port: u16,
+}
+
+impl Transport {
+    async fn send_and_receive(&self, timeout: Duration, request: Vec<u8>) -> Result<Vec<u8>> {
+        match self {
+            Self::Tcp(transport) => transport.send_and_receive(timeout, request).await,
+        }
+    }
+}
+
+impl TcpTransport {
+    async fn send_and_receive(&self, timeout: Duration, request: Vec<u8>) -> Result<Vec<u8>> {
+        let addr = format!("{}:{}", self.host, self.port);
+        let mut stream = time::timeout(timeout, TcpStream::connect(addr))
+            .await
+            .map_err(|_| EdcbError::Timeout)??;
+
+        time::timeout(timeout, stream.write_all(&request))
+            .await
+            .map_err(|_| EdcbError::Timeout)??;
+
+        let mut header = [0_u8; 8];
+        time::timeout(timeout, stream.read_exact(&mut header))
+            .await
+            .map_err(|_| EdcbError::Timeout)??;
+
+        let status = i32::from_le_bytes(header[0..4].try_into().expect("header field length"));
+        let size = i32::from_le_bytes(header[4..8].try_into().expect("header field length"));
+        let size = usize::try_from(size)
+            .map_err(|_| EdcbError::Decode("negative response body size".to_string()))?;
+        let mut body = vec![0_u8; size];
+        time::timeout(timeout, stream.read_exact(&mut body))
+            .await
+            .map_err(|_| EdcbError::Timeout)??;
+
+        if status == CMD_SUCCESS {
+            Ok(body)
+        } else {
+            Err(EdcbError::CommandStatus(status))
+        }
+    }
+}
+
+fn parse_port(value: &str) -> std::result::Result<u16, String> {
+    value
+        .parse()
+        .map_err(|_| format!("port must be a number in 0..=65535: {value}"))
+}
+
+fn parse_timeout(value: &str) -> std::result::Result<u64, String> {
+    let timeout = value
+        .parse::<u64>()
+        .map_err(|_| format!("timeout must be a positive integer: {value}"))?;
+    if timeout == 0 {
+        Err("timeout must be greater than zero".to_string())
+    } else {
+        Ok(timeout)
     }
 }
 
@@ -353,34 +463,10 @@ impl EdcbClient {
     }
 
     async fn send_and_receive(&self, request: Vec<u8>) -> Result<Vec<u8>> {
-        let addr = format!("{}:{}", self.config.host, self.config.port);
-        let mut stream = time::timeout(self.config.timeout, TcpStream::connect(addr))
+        self.config
+            .transport()
+            .send_and_receive(self.config.timeout, request)
             .await
-            .map_err(|_| EdcbError::Timeout)??;
-
-        time::timeout(self.config.timeout, stream.write_all(&request))
-            .await
-            .map_err(|_| EdcbError::Timeout)??;
-
-        let mut header = [0_u8; 8];
-        time::timeout(self.config.timeout, stream.read_exact(&mut header))
-            .await
-            .map_err(|_| EdcbError::Timeout)??;
-
-        let status = i32::from_le_bytes(header[0..4].try_into().expect("header field length"));
-        let size = i32::from_le_bytes(header[4..8].try_into().expect("header field length"));
-        let size = usize::try_from(size)
-            .map_err(|_| EdcbError::Decode("negative response body size".to_string()))?;
-        let mut body = vec![0_u8; size];
-        time::timeout(self.config.timeout, stream.read_exact(&mut body))
-            .await
-            .map_err(|_| EdcbError::Timeout)??;
-
-        if status == CMD_SUCCESS {
-            Ok(body)
-        } else {
-            Err(EdcbError::CommandStatus(status))
-        }
     }
 }
 

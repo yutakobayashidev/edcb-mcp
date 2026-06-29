@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::fmt;
-use std::time::Duration;
 
 use chrono::{DateTime, FixedOffset};
 use clap::{Args, Parser, Subcommand, error::ErrorKind, value_parser};
@@ -243,27 +242,6 @@ struct RawCli {
 
 impl RawCli {
     fn into_invocation(self, env: BTreeMap<String, String>) -> Result<CliInvocation, CliError> {
-        let host = self
-            .host
-            .or_else(|| env.get("EDCB_HOST").cloned())
-            .unwrap_or_else(|| "127.0.0.1".to_string());
-        let port = match self.port {
-            Some(port) => port,
-            None => env
-                .get("EDCB_PORT")
-                .map(|value| parse_port(value))
-                .transpose()?
-                .unwrap_or(4510),
-        };
-        let timeout_seconds = match self.timeout_seconds {
-            Some(timeout_seconds) => timeout_seconds,
-            None => env
-                .get("EDCB_TIMEOUT_SECONDS")
-                .map(|value| parse_timeout(value))
-                .transpose()?
-                .unwrap_or(15),
-        };
-        let timeout = Duration::from_secs(timeout_seconds);
         let output = if self.json {
             OutputMode::Json
         } else if self.plain {
@@ -273,11 +251,13 @@ impl RawCli {
         };
 
         Ok(CliInvocation {
-            connection: ConnectionConfig {
-                host,
-                port,
-                timeout,
-            },
+            connection: ConnectionConfig::from_env_and_args(
+                self.host,
+                self.port,
+                self.timeout_seconds,
+                &env,
+            )
+            .map_err(CliError::invalid_usage)?,
             output,
             command: self.command.try_into_command()?,
         })
@@ -388,9 +368,11 @@ struct ProgramsArgs {
 impl ProgramsArgs {
     fn try_into_command(self) -> Result<CliCommand, CliError> {
         match self.command {
-            ProgramsCommand::Search(search) => Ok(CliCommand::ProgramsSearch(search.into_query())),
+            ProgramsCommand::Search(search) => {
+                Ok(CliCommand::ProgramsSearch(search.try_into_query()?))
+            }
             ProgramsCommand::Timetable(timetable) => {
-                Ok(CliCommand::ProgramsTimetable(timetable.into_query()))
+                Ok(CliCommand::ProgramsTimetable(timetable.try_into_query()?))
             }
         }
     }
@@ -427,7 +409,7 @@ impl ReservationConditionsArgs {
                     ));
                 }
                 Ok(CliCommand::ReservationConditionCreate {
-                    query: search.into_query(),
+                    query: search.try_into_query()?,
                     options: recording.into_patch(),
                 })
             }
@@ -442,7 +424,11 @@ impl ReservationConditionsArgs {
                         "reservation-conditions update requires --yes to confirm mutation",
                     ));
                 }
-                let query = search.has_any().then(|| search.into_query());
+                let query = if search.has_any() {
+                    Some(search.try_into_query()?)
+                } else {
+                    None
+                };
                 Ok(CliCommand::ReservationConditionUpdate {
                     condition_id,
                     query,
@@ -681,7 +667,7 @@ impl SearchOptions {
             || self.duplicate_title_check_days.is_some()
     }
 
-    fn into_query(self) -> ProgramSearchQuery {
+    fn try_into_query(self) -> Result<ProgramSearchQuery, CliError> {
         let mut query = ProgramSearchQuery {
             keyword: self.keyword.unwrap_or_default(),
             exclude_keyword: self.exclude_keyword.unwrap_or_default(),
@@ -714,7 +700,8 @@ impl SearchOptions {
         if let Some(value) = self.duplicate_title_check_days {
             query.duplicate_title_check_period_days = value;
         }
-        query
+        query.validate().map_err(CliError::invalid_usage)?;
+        Ok(query)
     }
 }
 
@@ -750,13 +737,15 @@ struct TimetableOptions {
 }
 
 impl TimetableOptions {
-    fn into_query(self) -> TimeTableQuery {
-        TimeTableQuery {
+    fn try_into_query(self) -> Result<TimeTableQuery, CliError> {
+        let query = TimeTableQuery {
             start_time: self.start_time,
             end_time: self.end_time,
             channel_type: self.channel_type,
             services: self.service,
-        }
+        };
+        query.validate().map_err(CliError::invalid_usage)?;
+        Ok(query)
     }
 }
 
@@ -890,23 +879,6 @@ fn invalid_search_date_range(value: &str) -> CliError {
     ))
 }
 
-fn parse_port(value: &str) -> Result<u16, CliError> {
-    value.parse().map_err(|_| {
-        CliError::invalid_usage(format!("port must be a number in 0..=65535: {value}"))
-    })
-}
-
-fn parse_timeout(value: &str) -> Result<u64, CliError> {
-    let timeout = value.parse::<u64>().map_err(|_| {
-        CliError::invalid_usage(format!("timeout must be a positive integer: {value}"))
-    })?;
-    if timeout == 0 {
-        Err(CliError::invalid_usage("timeout must be greater than zero"))
-    } else {
-        Ok(timeout)
-    }
-}
-
 pub async fn execute(invocation: CliInvocation) -> Result<String, CliError> {
     let client = EdcbClient::new(invocation.connection.clone());
 
@@ -945,7 +917,9 @@ pub async fn execute(invocation: CliInvocation) -> Result<String, CliError> {
         }
         CliCommand::Channels => {
             let value = flows::list_channels(&client).await.map_err(runtime_error)?;
-            render(&invocation.output, &value, || format_channels_plain(&value))
+            render(&invocation.output, &value, || {
+                format_channels_plain(&value.channels)
+            })
         }
         CliCommand::RecordingDefaults => {
             let value = flows::get_recording_defaults(&client)

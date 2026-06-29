@@ -4,17 +4,14 @@ use std::time::Duration;
 
 use chrono::{Duration as ChronoDuration, Timelike};
 use edcb_tools::{
-    BroadcastType, ConnectionConfig, DuplicateTitleCheckScope, EdcbClient, EventKey,
-    PostRecordingMode, ProgramGenreRange, ProgramSearchQuery, RecordSettingsPatch,
-    RecordingAvailability, RecordingFolder, RecordingMode, SearchDateInfo, SearchKeyInfo,
-    ServiceKey, ServiceRecordingMode, TimeTableQuery,
-    flows::{
-        apply_record_settings_patch, build_reservation_from_event, create_reservation_condition,
-        create_reservation_with_options, delete_reservation, delete_reservation_condition,
-        get_timetable, preview_reservation, program_search_query_from_search_key,
-        program_search_query_to_search_key, search_programs, update_reservation,
-        update_reservation_condition,
-    },
+    AutoAddData, BestEffortStatus, BroadcastType, ConnectionConfig, ContentData,
+    DuplicateTitleCheckScope, EdcbClient, EventKey, FileData, PostRecordingMode, ProgramGenreRange,
+    ProgramSearchQuery, RecFileSetInfo, RecSettingData, RecordSettingsPatch, RecordingAvailability,
+    RecordingFolder, RecordingMode, SearchDateInfo, SearchKeyInfo, ServiceInfo, ServiceKey,
+    ServiceRecordingMode, TimeTableQuery, apply_record_settings_patch,
+    build_reservation_from_event, create_reservation_condition, create_reservation_with_options,
+    delete_reservation, delete_reservation_condition, get_timetable, preview_reservation,
+    program_search_query_from_search_key, program_search_query_to_search_key, search_programs,
     test_support::{
         encode_auto_add_list_for_test, encode_event_list_for_test, encode_file_list_for_test,
         encode_reserve_for_test, encode_reserve_list_for_test, encode_search_keys_for_test,
@@ -22,7 +19,7 @@ use edcb_tools::{
         encode_services_for_test, read_request_frame_for_test, reserve_fixture_for_test,
         service_event_fixture_for_test,
     },
-    types::{AutoAddData, FileData, RecFileSetInfo, RecSettingData, ServiceInfo},
+    update_reservation, update_reservation_condition,
 };
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -166,6 +163,48 @@ async fn spawn_command_sequence_server(
     (addr, handle)
 }
 
+async fn spawn_command_status_sequence_server(
+    commands: Vec<(i32, i32, Vec<u8>)>,
+) -> (SocketAddr, JoinHandle<Vec<Vec<u8>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("mock EDCB server should bind to a local port");
+    let addr = listener
+        .local_addr()
+        .expect("mock EDCB server should expose its local address");
+
+    let handle = tokio::spawn(async move {
+        let mut payloads = Vec::new();
+        for (expected_command, status, response_body) in commands {
+            let (mut socket, _) = listener
+                .accept()
+                .await
+                .expect("mock EDCB server should accept a client connection");
+            let (command, payload) = read_request_frame_for_test(&mut socket).await;
+            assert_eq!(command, expected_command);
+            socket
+                .write_i32_le(status)
+                .await
+                .expect("mock EDCB server should write response status");
+            socket
+                .write_i32_le(
+                    i32::try_from(response_body.len())
+                        .expect("response body length should fit in an EDCB frame"),
+                )
+                .await
+                .expect("mock EDCB server should write response length");
+            socket
+                .write_all(&response_body)
+                .await
+                .expect("mock EDCB server should write response body");
+            payloads.push(payload);
+        }
+        payloads
+    });
+
+    (addr, handle)
+}
+
 #[test]
 fn parses_service_and_event_keys() {
     let service = ServiceKey::from_str("32736:32736:1024")
@@ -261,7 +300,7 @@ fn record_settings_from_rec_setting_decodes_full_settings() {
         }],
     };
 
-    let settings = edcb_tools::flows::record_settings_from_rec_setting(&rec_setting)
+    let settings = edcb_tools::record_settings_from_rec_setting(&rec_setting)
         .expect("valid EDCB recording settings should decode");
 
     assert!(!settings.is_enabled);
@@ -468,7 +507,7 @@ fn search_key_info_maps_back_to_program_search_query() {
         and_key: "Program".to_string(),
         not_key: "Sports".to_string(),
         key_disabled: true,
-        content_list: vec![edcb_tools::types::ContentData {
+        content_list: vec![ContentData {
             content_nibble: 0x0e00,
             user_nibble: 0x1234,
         }],
@@ -626,6 +665,45 @@ async fn timetable_groups_programs_and_attaches_reservations() {
     assert_eq!(
         timetable.date_range.earliest,
         event.start_time.expect("test event should have start time")
+    );
+    assert_eq!(timetable.reservation_metadata_status, BestEffortStatus::Ok);
+}
+
+#[tokio::test]
+async fn timetable_reports_reservation_metadata_failure_without_hiding_programs() {
+    let (service, event) = service_event_fixture_for_test();
+    let (addr, server) = spawn_command_status_sequence_server(vec![
+        (
+            1021,
+            1,
+            encode_services_for_test(std::slice::from_ref(&service)),
+        ),
+        (
+            1029,
+            1,
+            encode_service_event_lists_for_test(&[(service.clone(), vec![event.clone()])]),
+        ),
+        (2011, 42, Vec::new()),
+    ])
+    .await;
+    let client = test_client(addr);
+
+    let timetable = get_timetable(&client, &TimeTableQuery::default())
+        .await
+        .expect("timetable should still return EPG data when reservation metadata fails");
+    server
+        .await
+        .expect("mock EDCB server task should complete without panicking");
+
+    assert_eq!(timetable.channels.len(), 1);
+    assert_eq!(timetable.channels[0].programs[0].event.eid, event.eid);
+    assert!(
+        matches!(
+            &timetable.reservation_metadata_status,
+            BestEffortStatus::Unavailable { message }
+                if message.contains("EDCB command returned status 42")
+        ),
+        "reservation metadata failure should be visible in the result"
     );
 }
 
@@ -1094,7 +1172,7 @@ async fn get_recording_defaults_fetches_default_reserve_settings() {
     let (addr, server) = spawn_single_command_server(2012, encode_reserve_for_test(&reserve)).await;
     let client = test_client(addr);
 
-    let settings = edcb_tools::flows::get_recording_defaults(&client)
+    let settings = edcb_tools::get_recording_defaults(&client)
         .await
         .expect("recording defaults should decode from EDCB default reserve");
     let payload = server
@@ -1160,7 +1238,7 @@ Priority=5
     let (addr, server) = spawn_single_command_server(2060, encode_file_list_for_test(&files)).await;
     let client = test_client(addr);
 
-    let presets = edcb_tools::flows::get_recording_presets(&client)
+    let presets = edcb_tools::get_recording_presets(&client)
         .await
         .expect("recording presets should parse from EpgTimerSrv.ini");
     let payload = server
@@ -1214,7 +1292,7 @@ async fn get_recording_presets_empty_ini_error_mentions_defaults_fallback() {
     let (addr, server) = spawn_single_command_server(2060, encode_file_list_for_test(&files)).await;
     let client = test_client(addr);
 
-    let error = edcb_tools::flows::get_recording_presets(&client)
+    let error = edcb_tools::get_recording_presets(&client)
         .await
         .expect_err("empty EpgTimerSrv.ini should be reported as a useful error");
     server
@@ -1266,7 +1344,7 @@ Data\tNetwork\t32736\t32736\t1400\t192\t0\t1\t1\t0\n";
     .await;
     let client = test_client(addr);
 
-    let channels = edcb_tools::flows::list_channels(&client)
+    let channel_list = edcb_tools::list_channels(&client)
         .await
         .expect("channels should build from current EDCB service data");
     let payloads = server
@@ -1283,17 +1361,46 @@ Data\tNetwork\t32736\t32736\t1400\t192\t0\t1\t1\t0\n";
             .any(|window| window == chset_name_bytes),
         "first request should be FileCopy for ChSet5.txt"
     );
-    assert_eq!(channels.len(), 3);
-    assert_eq!(channels[0].id, "NID32736-SID1024");
-    assert_eq!(channels[0].display_channel_id, "gr011");
-    assert_eq!(channels[0].channel_number, "011");
-    assert_eq!(channels[0].remocon_id, 1);
-    assert_eq!(channels[0].service_key.sid, 1024);
-    assert!(!channels[0].is_subchannel);
-    assert_eq!(channels[1].display_channel_id, "gr012");
-    assert!(channels[1].is_subchannel);
-    assert_eq!(channels[2].display_channel_id, "bs101");
-    assert!(channels[2].is_radiochannel);
+    assert_eq!(channel_list.epg_service_status, BestEffortStatus::Ok);
+    assert_eq!(channel_list.channels.len(), 3);
+    assert_eq!(channel_list.channels[0].id, "NID32736-SID1024");
+    assert_eq!(channel_list.channels[0].display_channel_id, "gr011");
+    assert_eq!(channel_list.channels[0].channel_number, "011");
+    assert_eq!(channel_list.channels[0].remocon_id, 1);
+    assert_eq!(channel_list.channels[0].service_key.sid, 1024);
+    assert!(!channel_list.channels[0].is_subchannel);
+    assert_eq!(channel_list.channels[1].display_channel_id, "gr012");
+    assert!(channel_list.channels[1].is_subchannel);
+    assert_eq!(channel_list.channels[2].display_channel_id, "bs101");
+    assert!(channel_list.channels[2].is_radiochannel);
+}
+
+#[tokio::test]
+async fn list_channels_reports_epg_metadata_failure_without_hiding_channels() {
+    let chset5 = "Main TV\tNetwork\t32736\t32736\t1024\t1\t0\t1\t1\t0\n";
+    let (addr, server) = spawn_command_status_sequence_server(vec![
+        (1060, 1, chset5.as_bytes().to_vec()),
+        (1021, 42, Vec::new()),
+    ])
+    .await;
+    let client = test_client(addr);
+
+    let channel_list = edcb_tools::list_channels(&client)
+        .await
+        .expect("channels should still be built from ChSet5 when EPG metadata fails");
+    server
+        .await
+        .expect("mock EDCB server task should complete without panicking");
+
+    assert_eq!(channel_list.channels.len(), 1);
+    assert!(
+        matches!(
+            &channel_list.epg_service_status,
+            BestEffortStatus::Unavailable { message }
+                if message.contains("EDCB command returned status 42")
+        ),
+        "EPG metadata failure should be visible in the result"
+    );
 }
 
 #[tokio::test]

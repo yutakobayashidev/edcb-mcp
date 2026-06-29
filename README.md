@@ -76,9 +76,12 @@ edcb-tools = { git = "https://github.com/yutakobayashidev/edcb-tools" }
 ## Architecture
 
 `EdcbClient` is a raw CtrlCmd client: its methods map closely to EDCB commands
-and wire data structures. Application-level operations live in `flows`, such as
-program search and event-based reservation preview/create. The CLI and MCP
-server call these flows instead of embedding CtrlCmd orchestration directly.
+and wire data structures. Application-level operations such as program search
+and event-based reservation preview/create are exported from the crate root. The
+CLI and MCP server call these operations instead of embedding CtrlCmd
+orchestration directly. TCP transport is isolated behind an internal transport
+boundary so additional transports can be added without rewriting command
+encoding.
 
 ## To Do
 
@@ -224,6 +227,8 @@ edcb reservation-conditions update 77 --keyword news --duplicate-title-check sam
 Program timetable uses EDCB's `EnumPgInfoEx` semantics. It returns programs
 grouped by service, nests short same-TS subchannels under their main channel,
 and attaches reservation metadata when a matching reservation can be found.
+JSON output includes `reservation_metadata_status`; if reservation lookup fails,
+programs are still returned and the status contains the failure message.
 
 Timetable options:
 
@@ -243,7 +248,10 @@ edcb programs timetable --service 32736:32736:1024 --start-time 2026-06-29T19:00
 `ChSet5.txt` and `EnumService`. It includes `display_channel_id`, channel type,
 service key, remocon ID, subchannel/radio flags, and watchability flags. Because
 it is stateless, it does not preserve recorded-only historical channels, pinned
-channels, jikkyo state, or viewer counts.
+channels, jikkyo state, or viewer counts. Plain output is still one line per
+channel; JSON output wraps the list in `channels` and includes
+`epg_service_status` so callers can distinguish missing EPG metadata from an
+empty channel list.
 
 ```sh
 edcb channels
@@ -392,7 +400,9 @@ settings. `update_reservation_condition` accepts `condition_id`, optional
 `condition`, and optional `options`.
 
 `get_timetable` accepts service/time/channel filters and returns channels with
-programs, optional nested subchannels, and best-effort reservation metadata:
+programs, optional nested subchannels, and best-effort reservation metadata. The
+response includes `reservation_metadata_status` so callers can distinguish "no
+matching reservation" from "reservation lookup failed":
 
 ```json
 {

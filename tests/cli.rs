@@ -3,10 +3,9 @@ use std::time::Duration;
 use chrono::DateTime;
 use edcb_tools::{
     BroadcastType, ChannelType, ConnectionConfig, DuplicateTitleCheckScope, EventKey, PluginKind,
-    ProgramGenreRange, ProgramSearchQuery, RecordingMode, SearchDateInfo, ServiceKey,
+    ProgramGenreRange, ProgramSearchQuery, RecordingMode, SearchDateInfo, ServiceInfo, ServiceKey,
     ServiceRecordingMode, TimeTableQuery,
     cli::{CliAction, CliCommand, CliInvocation, OutputMode, format_services_plain},
-    types::ServiceInfo,
 };
 
 fn empty_env() -> std::iter::Empty<(&'static str, &'static str)> {
@@ -435,6 +434,46 @@ fn rejects_invalid_program_search_date_range() {
 
     assert_eq!(error.exit_code, 2);
     assert!(error.message.contains("date range"));
+}
+
+#[test]
+fn rejects_invalid_program_search_duration_range_during_parse() {
+    let error = CliAction::from_args_and_env(
+        [
+            "edcb",
+            "programs",
+            "search",
+            "--duration-min",
+            "120",
+            "--duration-max",
+            "30",
+        ],
+        empty_env(),
+    )
+    .expect_err("duration range should be rejected before executing the flow");
+
+    assert_eq!(error.exit_code, 2);
+    assert!(error.message.contains("duration_min"));
+}
+
+#[test]
+fn rejects_invalid_program_timetable_range_during_parse() {
+    let error = CliAction::from_args_and_env(
+        [
+            "edcb",
+            "programs",
+            "timetable",
+            "--start-time",
+            "2026-06-29T23:00:00+09:00",
+            "--end-time",
+            "2026-06-29T19:00:00+09:00",
+        ],
+        empty_env(),
+    )
+    .expect_err("timetable range should be rejected before executing the flow");
+
+    assert_eq!(error.exit_code, 2);
+    assert!(error.message.contains("end_time"));
 }
 
 #[test]

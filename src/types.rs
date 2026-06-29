@@ -508,6 +508,22 @@ pub struct TimeTableQuery {
 pub struct TimeTable {
     pub channels: Vec<TimeTableChannel>,
     pub date_range: TimeTableDateRange,
+    pub reservation_metadata_status: BestEffortStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum BestEffortStatus {
+    Ok,
+    Unavailable { message: String },
+}
+
+impl BestEffortStatus {
+    pub fn unavailable(error: impl ToString) -> Self {
+        Self::Unavailable {
+            message: error.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -544,6 +560,12 @@ pub struct Channel {
     pub is_subchannel: bool,
     pub is_radiochannel: bool,
     pub is_watchable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChannelList {
+    pub channels: Vec<Channel>,
+    pub epg_service_status: BestEffortStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -583,6 +605,21 @@ pub struct SearchDateInfo {
     pub end_day_of_week: u8,
     pub end_hour: u16,
     pub end_min: u16,
+}
+
+impl SearchDateInfo {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.start_day_of_week > 6 || self.end_day_of_week > 6 {
+            return Err("program search date range day_of_week must be in 0..=6".to_string());
+        }
+        if self.start_hour > 23 || self.end_hour > 23 {
+            return Err("program search date range hour must be in 0..=23".to_string());
+        }
+        if self.start_min > 59 || self.end_min > 59 {
+            return Err("program search date range minute must be in 0..=59".to_string());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
@@ -706,6 +743,47 @@ impl Default for ProgramSearchQuery {
             duplicate_title_check_scope: DuplicateTitleCheckScope::None,
             duplicate_title_check_period_days: 6,
         }
+    }
+}
+
+impl ProgramSearchQuery {
+    pub fn validate(&self) -> Result<(), String> {
+        if let (Some(min), Some(max)) = (self.duration_min, self.duration_max)
+            && min > max
+        {
+            return Err(
+                "program search duration_min must be less than or equal to duration_max"
+                    .to_string(),
+            );
+        }
+        for value in [self.duration_min, self.duration_max].into_iter().flatten() {
+            if value > 9999 {
+                return Err(format!(
+                    "program search duration must be in 0..=9999 minutes: {value}"
+                ));
+            }
+        }
+        for date in &self.date_ranges {
+            date.validate()?;
+        }
+        if self.duplicate_title_check_period_days > 9999 {
+            return Err(format!(
+                "duplicate_title_check_period_days must be in 0..=9999: {}",
+                self.duplicate_title_check_period_days
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl TimeTableQuery {
+    pub fn validate(&self) -> Result<(), String> {
+        if let (Some(start), Some(end)) = (self.start_time, self.end_time)
+            && end <= start
+        {
+            return Err("timetable end_time must be later than start_time".to_string());
+        }
+        Ok(())
     }
 }
 

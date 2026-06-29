@@ -9,12 +9,12 @@ use crate::recording::{
     recording_mode_from_rec_mode, service_mode_value, service_recording_modes, suspend_mode_value,
 };
 use crate::types::{
-    AutoAddData, BroadcastType, Channel, ChannelType, ContentData, DuplicateTitleCheckScope,
-    EventInfo, EventKey, ProgramGenreRange, ProgramSearchQuery, RecSettingData, RecordSettings,
-    RecordSettingsPatch, RecordSettingsPresets, RecordingAvailability, ReservationCondition,
-    ReservationStatus, ReserveData, SearchDateInfo, SearchKeyInfo, ServiceInfo, ServiceKey,
-    TimeTable, TimeTableChannel, TimeTableDateRange, TimeTableProgram, TimeTableProgramReservation,
-    TimeTableQuery, TimeTableSubchannel,
+    AutoAddData, BestEffortStatus, BroadcastType, ChannelList, ChannelType, ContentData,
+    DuplicateTitleCheckScope, EventInfo, EventKey, ProgramGenreRange, ProgramSearchQuery,
+    RecSettingData, RecordSettings, RecordSettingsPatch, RecordSettingsPresets,
+    RecordingAvailability, ReservationCondition, ReservationStatus, ReserveData, SearchKeyInfo,
+    ServiceInfo, ServiceKey, TimeTable, TimeTableChannel, TimeTableDateRange, TimeTableProgram,
+    TimeTableProgramReservation, TimeTableQuery, TimeTableSubchannel,
 };
 use crate::util::{convert_bytes_to_string, datetime_to_file_time, parse_ch_set5};
 
@@ -169,19 +169,21 @@ pub async fn get_timetable(client: &EdcbClient, query: &TimeTableQuery) -> Resul
     } else {
         client.enum_pg_info_ex(&service_time_list).await?
     };
-    let reserves = client.enum_reserve().await.unwrap_or_default();
-    Ok(build_timetable(&services, service_events, &reserves, query))
+    let (reserves, reservation_metadata_status) = match client.enum_reserve().await {
+        Ok(reserves) => (reserves, BestEffortStatus::Ok),
+        Err(error) => (Vec::new(), BestEffortStatus::unavailable(error)),
+    };
+    Ok(build_timetable(
+        &services,
+        service_events,
+        &reserves,
+        query,
+        reservation_metadata_status,
+    ))
 }
 
 fn validate_timetable_query(query: &TimeTableQuery) -> Result<()> {
-    if let (Some(start), Some(end)) = (query.start_time, query.end_time)
-        && end <= start
-    {
-        return Err(EdcbError::InvalidInput(
-            "timetable end_time must be later than start_time".to_string(),
-        ));
-    }
-    Ok(())
+    query.validate().map_err(EdcbError::InvalidInput)
 }
 
 async fn resolve_timetable_services(
@@ -229,6 +231,7 @@ fn build_timetable(
     service_events: Vec<crate::types::ServiceEventInfo>,
     reserves: &[ReserveData],
     query: &TimeTableQuery,
+    reservation_metadata_status: BestEffortStatus,
 ) -> TimeTable {
     let now = Utc::now().fixed_offset();
     let events_by_service = events_by_service(service_events);
@@ -237,6 +240,7 @@ fn build_timetable(
     TimeTable {
         channels: build_timetable_channels(services, &programs.by_service),
         date_range: timetable_date_range(query, programs.earliest, programs.latest),
+        reservation_metadata_status,
     }
 }
 
@@ -543,52 +547,7 @@ fn event_end_time(event: &EventInfo) -> Option<DateTime<FixedOffset>> {
 }
 
 fn validate_program_search_query(query: &ProgramSearchQuery) -> Result<()> {
-    if let (Some(min), Some(max)) = (query.duration_min, query.duration_max)
-        && min > max
-    {
-        return Err(EdcbError::InvalidInput(
-            "program search duration_min must be less than or equal to duration_max".to_string(),
-        ));
-    }
-    for value in [query.duration_min, query.duration_max]
-        .into_iter()
-        .flatten()
-    {
-        if value > 9999 {
-            return Err(EdcbError::InvalidInput(format!(
-                "program search duration must be in 0..=9999 minutes: {value}"
-            )));
-        }
-    }
-    for date in &query.date_ranges {
-        validate_search_date(date)?;
-    }
-    if query.duplicate_title_check_period_days > 9999 {
-        return Err(EdcbError::InvalidInput(format!(
-            "duplicate_title_check_period_days must be in 0..=9999: {}",
-            query.duplicate_title_check_period_days
-        )));
-    }
-    Ok(())
-}
-
-fn validate_search_date(date: &SearchDateInfo) -> Result<()> {
-    if date.start_day_of_week > 6 || date.end_day_of_week > 6 {
-        return Err(EdcbError::InvalidInput(
-            "program search date day_of_week must be in 0..=6".to_string(),
-        ));
-    }
-    if date.start_hour > 23 || date.end_hour > 23 {
-        return Err(EdcbError::InvalidInput(
-            "program search date hour must be in 0..=23".to_string(),
-        ));
-    }
-    if date.start_min > 59 || date.end_min > 59 {
-        return Err(EdcbError::InvalidInput(
-            "program search date minute must be in 0..=59".to_string(),
-        ));
-    }
-    Ok(())
+    query.validate().map_err(EdcbError::InvalidInput)
 }
 
 async fn default_search_services(client: &EdcbClient) -> Result<Vec<ServiceKey>> {
@@ -639,13 +598,28 @@ pub async fn get_recording_presets(client: &EdcbClient) -> Result<RecordSettings
     crate::recording::parse_recording_presets_ini(&ini)
 }
 
-pub async fn list_channels(client: &EdcbClient) -> Result<Vec<Channel>> {
-    let chset = match client.file_copy("ChSet5.txt").await {
-        Ok(data) if !data.is_empty() => parse_ch_set5(&convert_bytes_to_string(&data, "cp932")),
-        _ => crate::channels::chset_from_services(client.enum_service().await?),
+pub async fn list_channels(client: &EdcbClient) -> Result<ChannelList> {
+    let (chset, epg_services, epg_service_status) = match client.file_copy("ChSet5.txt").await {
+        Ok(data) if !data.is_empty() => {
+            let chset = parse_ch_set5(&convert_bytes_to_string(&data, "cp932"));
+            match client.enum_service().await {
+                Ok(services) => (chset, services, BestEffortStatus::Ok),
+                Err(error) => (chset, Vec::new(), BestEffortStatus::unavailable(error)),
+            }
+        }
+        _ => {
+            let services = client.enum_service().await?;
+            (
+                crate::channels::chset_from_services(services.clone()),
+                services,
+                BestEffortStatus::Ok,
+            )
+        }
     };
-    let epg_services = client.enum_service().await.unwrap_or_default();
-    Ok(crate::channels::channels_from_sources(chset, &epg_services))
+    Ok(ChannelList {
+        channels: crate::channels::channels_from_sources(chset, &epg_services),
+        epg_service_status,
+    })
 }
 
 pub async fn list_reservation_conditions(client: &EdcbClient) -> Result<Vec<ReservationCondition>> {
